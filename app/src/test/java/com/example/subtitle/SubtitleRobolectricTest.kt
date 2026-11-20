@@ -177,4 +177,190 @@ class SubtitleRobolectricTest {
 
         controller.destroy()
     }
+
+    @Test
+    fun `subtitle disappears clears active text while keeping status READY`() = runBlocking {
+        val outputs = ArrayDeque(
+            listOf(
+                OcrEngineResult.Success(OcrOutput("HELLO WORLD", confidence = 0.91f, processingTimeMs = 28L)),
+                OcrEngineResult.Success(OcrOutput("   ", confidence = null, processingTimeMs = 15L))
+            )
+        )
+        val processedSignals = mutableListOf<CompletableDeferred<Unit>>(
+            CompletableDeferred(),
+            CompletableDeferred()
+        )
+        var callIndex = 0
+        val deduplicator = SubtitleDeduplicator()
+        val states = mutableListOf<OcrState>()
+
+        val engine = object : OcrEngine {
+            override suspend fun recognize(roiBitmap: Bitmap): OcrEngineResult {
+                return outputs.removeFirst()
+            }
+
+            override fun close() {}
+        }
+
+        val worker = OcrPipelineWorker(
+            ocrEngine = engine,
+            deduplicator = deduplicator,
+            elapsedClockMs = { 1_000L + callIndex * 150L },
+            onStateChanged = { state ->
+                synchronized(states) { states.add(state) }
+                if (state.status == OcrStatus.READY) {
+                    val idx = callIndex++
+                    if (idx < processedSignals.size) {
+                        processedSignals[idx].complete(Unit)
+                    }
+                }
+            }
+        )
+        worker.start()
+
+        worker.submitRoiBitmap(Bitmap.createBitmap(100, 40, Bitmap.Config.ARGB_8888), 1L, 1_000L)
+        processedSignals[0].await()
+
+        val activeState = synchronized(states) { states.last() }
+        assertEquals("HELLO WORLD", activeState.latestText)
+        assertEquals(0.91f, activeState.confidence)
+        assertTrue(activeState.isNewText)
+
+        worker.submitRoiBitmap(Bitmap.createBitmap(100, 40, Bitmap.Config.ARGB_8888), 2L, 1_150L)
+        processedSignals[1].await()
+
+        val clearedState = synchronized(states) { states.last() }
+        assertEquals(OcrStatus.READY, clearedState.status)
+        assertNull(clearedState.latestText)
+        assertNull(clearedState.confidence)
+        assertNull(clearedState.lastRecognitionElapsedMs)
+        assertEquals(false, clearedState.isNewText)
+        assertEquals(15L, clearedState.processingTimeMs)
+        assertEquals(2L, clearedState.sourceFrameIndex)
+        assertNull(clearedState.errorMessage)
+        assertNull(deduplicator.activeText())
+
+        worker.release()
+    }
+
+    @Test
+    fun `subtitle reappearing after disappearance is emitted as NEW subtitle`() = runBlocking {
+        val outputs = ArrayDeque(
+            listOf(
+                OcrEngineResult.Success(OcrOutput("HELLO WORLD", confidence = 0.88f, processingTimeMs = 20L)),
+                OcrEngineResult.Success(OcrOutput("HELLO WORLD", confidence = 0.90f, processingTimeMs = 21L)),
+                OcrEngineResult.Success(OcrOutput("...", confidence = null, processingTimeMs = 14L)),
+                OcrEngineResult.Success(OcrOutput("HELLO WORLD", confidence = 0.89f, processingTimeMs = 22L))
+            )
+        )
+        val signals = List(4) { CompletableDeferred<Unit>() }
+        val readyStates = mutableListOf<OcrState>()
+        var readyIdx = 0
+
+        val engine = object : OcrEngine {
+            override suspend fun recognize(roiBitmap: Bitmap): OcrEngineResult = outputs.removeFirst()
+            override fun close() {}
+        }
+
+        val worker = OcrPipelineWorker(
+            ocrEngine = engine,
+            elapsedClockMs = { 2_000L + readyIdx * 150L },
+            onStateChanged = { state ->
+                if (state.status == OcrStatus.READY) {
+                    synchronized(readyStates) { readyStates.add(state) }
+                    val idx = readyIdx++
+                    if (idx < signals.size) signals[idx].complete(Unit)
+                }
+            }
+        )
+        worker.start()
+
+        for (i in 0 until 4) {
+            worker.submitRoiBitmap(
+                Bitmap.createBitmap(100, 40, Bitmap.Config.ARGB_8888),
+                frameIndex = (i + 1).toLong(),
+                capturedElapsedMs = 2_000L + i * 150L
+            )
+            signals[i].await()
+        }
+
+        val snapshot = synchronized(readyStates) { readyStates.toList() }
+        assertEquals(4, snapshot.size)
+
+        // 1. HELLO WORLD -> isNewText = true
+        assertEquals("HELLO WORLD", snapshot[0].latestText)
+        assertTrue(snapshot[0].isNewText)
+
+        // 2. HELLO WORLD -> isNewText = false
+        assertEquals("HELLO WORLD", snapshot[1].latestText)
+        assertEquals(false, snapshot[1].isNewText)
+
+        // 3. disappear -> latestText = null
+        assertNull(snapshot[2].latestText)
+        assertEquals(false, snapshot[2].isNewText)
+
+        // 4. HELLO WORLD again -> isNewText = true
+        assertEquals("HELLO WORLD", snapshot[3].latestText)
+        assertTrue(snapshot[3].isNewText)
+        assertEquals(2L, snapshot[3].recognitionCount)
+
+        worker.release()
+    }
+
+    @Test
+    fun `consecutive empty OCR does not generate subtitle events and keeps deduplicator cleared`() = runBlocking {
+        val outputs = ArrayDeque(
+            listOf(
+                OcrEngineResult.Success(OcrOutput("", confidence = null, processingTimeMs = 12L)),
+                OcrEngineResult.Success(OcrOutput("   \n ", confidence = null, processingTimeMs = 11L)),
+                OcrEngineResult.Success(OcrOutput("...", confidence = null, processingTimeMs = 10L))
+            )
+        )
+        val signals = List(3) { CompletableDeferred<Unit>() }
+        val readyStates = mutableListOf<OcrState>()
+        var readyIdx = 0
+        val deduplicator = SubtitleDeduplicator()
+
+        val engine = object : OcrEngine {
+            override suspend fun recognize(roiBitmap: Bitmap): OcrEngineResult = outputs.removeFirst()
+            override fun close() {}
+        }
+
+        val worker = OcrPipelineWorker(
+            ocrEngine = engine,
+            deduplicator = deduplicator,
+            elapsedClockMs = { 3_000L + readyIdx * 150L },
+            onStateChanged = { state ->
+                if (state.status == OcrStatus.READY) {
+                    synchronized(readyStates) { readyStates.add(state) }
+                    val idx = readyIdx++
+                    if (idx < signals.size) signals[idx].complete(Unit)
+                }
+            }
+        )
+        worker.start()
+
+        for (i in 0 until 3) {
+            worker.submitRoiBitmap(
+                Bitmap.createBitmap(100, 40, Bitmap.Config.ARGB_8888),
+                frameIndex = (i + 1).toLong(),
+                capturedElapsedMs = 3_000L + i * 150L
+            )
+            signals[i].await()
+        }
+
+        val snapshot = synchronized(readyStates) { readyStates.toList() }
+        assertEquals(3, snapshot.size)
+        snapshot.forEach { state ->
+            assertEquals(OcrStatus.READY, state.status)
+            assertNull(state.latestText)
+            assertNull(state.confidence)
+            assertNull(state.lastRecognitionElapsedMs)
+            assertEquals(false, state.isNewText)
+            assertEquals(0L, state.recognitionCount)
+        }
+        assertNull(deduplicator.activeText())
+
+        worker.release()
+    }
 }

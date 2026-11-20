@@ -169,15 +169,30 @@ class OcrPipelineWorker(
 
         val normalized = normalizer.normalize(output.rawText)
         if (normalized == null) {
+            val hadActiveSubtitle = currentState.latestText != null
+            deduplicator.clear()
             publishState(
                 currentState.copy(
                     status = OcrStatus.READY,
+                    latestText = null,
+                    confidence = null,
+                    lastRecognitionElapsedMs = null,
                     processingTimeMs = output.processingTimeMs,
                     sourceFrameIndex = pending.frameIndex,
+                    isNewText = false,
                     errorMessage = null
                 )
             )
-            logStatusIfChanged(OcrStatus.READY, "no-text")
+            if (hadActiveSubtitle) {
+                lastLoggedStatus = OcrStatus.READY
+                Log.i(
+                    TAG,
+                    "status=READY event=SUBTITLE_DISAPPEARED processingMs=${output.processingTimeMs} " +
+                        "frameIndex=${pending.frameIndex}"
+                )
+            } else {
+                logStatusIfChanged(OcrStatus.READY, "no-text")
+            }
             return
         }
 
@@ -239,12 +254,16 @@ class OcrPipelineWorker(
         if (leftover != null && !leftover.roiBitmap.isRecycled) {
             leftover.roiBitmap.recycle()
         }
-        deduplicator.reset()
+        deduplicator.clear()
         lastScheduledMs.set(0L)
         lastLoggedStatus = null
         publishState(
             currentState.copy(
                 status = OcrStatus.IDLE,
+                latestText = null,
+                confidence = null,
+                lastRecognitionElapsedMs = null,
+                isNewText = false,
                 errorMessage = null
             )
         )

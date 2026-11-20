@@ -85,6 +85,24 @@ class SubtitlePipelineUnitTest {
     }
 
     @Test
+    fun `subtitle reappearing after clear is treated as new text`() {
+        val deduplicator = SubtitleDeduplicator()
+
+        val first = deduplicator.evaluate("HELLO WORLD", null, 100L, 1L, 20L)
+        val second = deduplicator.evaluate("HELLO WORLD", null, 250L, 2L, 22L)
+        assertEquals("HELLO WORLD", deduplicator.activeText())
+
+        deduplicator.clear()
+        assertNull(deduplicator.activeText())
+
+        val third = deduplicator.evaluate("HELLO WORLD", null, 400L, 3L, 21L)
+
+        assertTrue(first.isNewText)
+        assertFalse(second.isNewText)
+        assertTrue(third.isNewText)
+    }
+
+    @Test
     fun `invalid ROI is rejected cleanly without crashing`() {
         val inverted = SubtitleRoi(left = 0.8f, top = 0.2f, right = 0.3f, bottom = 0.9f)
         val outOfBounds = SubtitleRoi(left = -0.2f, top = 0.7f, right = 1.2f, bottom = 0.95f)

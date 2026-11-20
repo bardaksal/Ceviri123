@@ -10,8 +10,11 @@ data class SubtitleRecognitionResult(
 )
 
 /**
- * Compares normalized OCR text across consecutive frames so static subtitles
- * produce a single subtitle event until the text genuinely changes.
+ * Tracks active normalized subtitle text across consecutive frames.
+ * Lifecycle:
+ * - NEW_SUBTITLE -> isNewText = true
+ * - SAME_SUBTITLE -> isNewText = false
+ * - SUBTITLE_DISAPPEARED -> clear()/reset() clears active text so reappearance is NEW_SUBTITLE
  */
 class SubtitleDeduplicator {
 
@@ -40,7 +43,15 @@ class SubtitleDeduplicator {
     }
 
     @Synchronized
-    fun reset() {
+    fun activeText(): String? = lastNormalizedText
+
+    @Synchronized
+    fun clear() {
         lastNormalizedText = null
+    }
+
+    @Synchronized
+    fun reset() {
+        clear()
     }
 }
