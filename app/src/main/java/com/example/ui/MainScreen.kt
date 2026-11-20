@@ -1280,7 +1280,18 @@ private fun SpeechDiagnosticResultBox(report: SpeechDiagnosticReport) {
                 style = MaterialTheme.typography.bodySmall,
                 color = TextPrimary
             )
-            if (isSuccess) {
+            Text(
+                text = "${report.d1ModelStatus} | ${report.d2NativeStatus} | ${report.d3DirectGenerateStatus} | ${report.d4CallbackStatus} | ${report.d5AudioTrackStatus}",
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary
+            )
+            Text(
+                text = "Direct generate: ${report.directGenerateSamples} örnek (null=${report.directGenerateReturnNull ?: "-"}) • " +
+                    "Callback: ${report.callbackInvocations}/${report.callbackSamples} (ret=${report.callbackGenerateReturnedSamples})",
+                style = MaterialTheme.typography.labelSmall,
+                color = TextPrimary
+            )
+            if (isSuccess || report.sampleCount > 0L) {
                 Text(
                     text = "Samples: ${report.sampleCount} • SampleRate: ${report.sampleRateHz ?: 0} Hz • " +
                         "Süre: ${report.audioDurationMs ?: 0} ms • Mod: ${report.synthesisMode ?: "-"}",

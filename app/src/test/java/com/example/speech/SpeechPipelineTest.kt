@@ -665,13 +665,16 @@ class SpeechPipelineTest {
 
             val modelDir = java.io.File(tempRoot, "tts_models/${TurkishTtsModelManager.MODEL_ID}")
             val espeakDir = java.io.File(modelDir, "espeak-ng-data")
-            espeakDir.mkdirs()
+            val trLangDir = java.io.File(espeakDir, "lang/trk")
+            trLangDir.mkdirs()
             java.io.File(modelDir, TurkishTtsModelManager.EXPECTED_ONNX_NAME).writeBytes(ByteArray(1_200_000))
-            java.io.File(modelDir, "tokens.txt").writeText("a 1\n")
+            java.io.File(modelDir, "tokens.txt").writeText("_ 0\n^ 1\n$ 2\na 3\n")
             java.io.File(espeakDir, "phontab").writeBytes(byteArrayOf(1, 2, 3))
             java.io.File(espeakDir, "phondata").writeBytes(byteArrayOf(1, 2, 3))
             java.io.File(espeakDir, "phonindex").writeBytes(byteArrayOf(1, 2, 3))
-            java.io.File(modelDir, ".model_ready_v1").writeText("ok")
+            java.io.File(trLangDir, "tr").writeBytes(byteArrayOf(1, 2, 3))
+            java.io.File(espeakDir, "tr_dict").writeBytes(byteArrayOf(1, 2, 3))
+            java.io.File(modelDir, ".model_ready_v2").writeText("ok")
 
             val readyInspection = manager.inspectModelDirectory(logDetails = false)
             assertEquals(true, readyInspection.onnxExists)
@@ -680,11 +683,161 @@ class SpeechPipelineTest {
             assertEquals(true, readyInspection.espeakPhontabExists)
             assertEquals(true, readyInspection.espeakPhondataExists)
             assertEquals(true, readyInspection.espeakPhonindexExists)
+            assertEquals(true, readyInspection.espeakTurkishLangExists)
+            assertEquals(true, readyInspection.espeakTurkishDictExists)
             val resolved = manager.resolveModelPathsOrNull(logInspection = false)
             assertTrue(resolved != null)
             assertEquals(TurkishTtsModelManager.EXPECTED_ONNX_NAME, resolved?.onnxFile?.name)
+
+            // Incomplete installation (e.g., missing tr_dict) invalidates ready marker cleanly
+            java.io.File(espeakDir, "tr_dict").delete()
+            assertEquals(null, manager.resolveModelPathsOrNull(logInspection = false))
+            assertEquals(false, java.io.File(modelDir, ".model_ready_v2").exists())
         } finally {
             tempRoot.deleteRecursively()
         }
     }
+
+    @Test
+    fun `validateVitsPaths verifies onnx, Piper tokens markers, and espeak-ng-data directory`() {
+        val tempRoot = kotlin.io.path.createTempDirectory("subcast_vits_cfg").toFile()
+        try {
+            val espeakDir = java.io.File(tempRoot, "espeak-ng-data")
+            val trLangDir = java.io.File(espeakDir, "lang/trk")
+            trLangDir.mkdirs()
+            val onnx = java.io.File(tempRoot, "tr_TR-fahrettin-medium.onnx").apply {
+                writeBytes(ByteArray(1_200_000))
+            }
+            val tokens = java.io.File(tempRoot, "tokens.txt").apply {
+                writeText("_ 0\n^ 1\n$ 2\na 14\n")
+            }
+            java.io.File(espeakDir, "phontab").writeBytes(byteArrayOf(1, 2))
+            java.io.File(espeakDir, "phondata").writeBytes(byteArrayOf(1, 2))
+            java.io.File(espeakDir, "phonindex").writeBytes(byteArrayOf(1, 2))
+            java.io.File(trLangDir, "tr").writeBytes(byteArrayOf(1, 2))
+            java.io.File(espeakDir, "tr_dict").writeBytes(byteArrayOf(1, 2))
+
+            val valid = SpeechDiagnosticSupport.validateVitsPaths(
+                onnxPath = onnx.absolutePath,
+                tokensPath = tokens.absolutePath,
+                espeakDataDirPath = espeakDir.absolutePath
+            )
+            assertTrue(valid.isValid)
+            assertTrue(valid.missingOrInvalidItems.isEmpty())
+
+            // Corrupt tokens.txt missing '^' and '$'
+            tokens.writeText("a 14\n")
+            val invalidTokens = SpeechDiagnosticSupport.validateVitsPaths(
+                onnxPath = onnx.absolutePath,
+                tokensPath = tokens.absolutePath,
+                espeakDataDirPath = espeakDir.absolutePath
+            )
+            assertEquals(false, invalidTokens.isValid)
+            assertTrue(invalidTokens.missingOrInvalidItems.any { it.contains("tokens.txt") })
+        } finally {
+            tempRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `analyzePcmSamples distinguishes null, empty, and valid non-zero audio waveform`() {
+        val nullStats = SpeechDiagnosticSupport.analyzePcmSamples(null, 22050)
+        assertEquals(true, nullStats.returnNull)
+        assertEquals(0L, nullStats.sampleCount)
+        assertEquals(false, nullStats.hasSamples)
+
+        val emptyStats = SpeechDiagnosticSupport.analyzePcmSamples(FloatArray(0), 22050)
+        assertEquals(false, emptyStats.returnNull)
+        assertEquals(0L, emptyStats.sampleCount)
+        assertEquals(false, emptyStats.hasSamples)
+
+        val samples = FloatArray(22050) { idx ->
+            if (idx % 2 == 0) 0.25f else -0.5f
+        }
+        val validStats = SpeechDiagnosticSupport.analyzePcmSamples(samples, 22050)
+        assertEquals(false, validStats.returnNull)
+        assertEquals(22050L, validStats.sampleCount)
+        assertEquals(1000L, validStats.durationMs)
+        assertEquals(-0.5f, validStats.minSample)
+        assertEquals(0.25f, validStats.maxSample)
+        assertTrue(validStats.absSum > 8000.0)
+        assertEquals(true, validStats.hasSamples)
+        assertEquals(true, validStats.hasNonZeroSignal)
+    }
+
+    @Test
+    fun `buildSynthesisDiagnosticReport handles zero-sample failure and direct non-zero success distinctly`() {
+        val readyInspection = ModelDirectoryInspection(
+            storageLocation = "APP_INTERNAL_STORAGE",
+            modelDirPath = "/data/user/0/app/files/tts_models/vits-piper-tr_TR-fahrettin-medium",
+            modelDirExists = true,
+            readyMarkerExists = true,
+            onnxPath = "/data/user/0/app/files/tts_models/vits-piper-tr_TR-fahrettin-medium/tr_TR-fahrettin-medium.onnx",
+            onnxExists = true,
+            onnxSizeBytes = 63_200_000L,
+            tokensPath = "/data/user/0/app/files/tts_models/vits-piper-tr_TR-fahrettin-medium/tokens.txt",
+            tokensExists = true,
+            tokensSizeBytes = 1024L,
+            espeakDirPath = "/data/user/0/app/files/tts_models/vits-piper-tr_TR-fahrettin-medium/espeak-ng-data",
+            espeakDirExists = true,
+            espeakPhontabExists = true,
+            espeakPhondataExists = true,
+            espeakPhonindexExists = true,
+            espeakTurkishLangExists = true,
+            espeakTurkishDictExists = true,
+            jsonConfigPath = null,
+            jsonConfigExists = false,
+            fileCount = 50,
+            configExists = true
+        )
+
+        val emptyDirect = SpeechDiagnosticSupport.analyzePcmSamples(FloatArray(0), 22050)
+        val emptyReport = SpeechDiagnosticSupport.buildSynthesisDiagnosticReport(
+            phrase = SpeechEngine.DIAGNOSTIC_TEST_PHRASE,
+            inspection = readyInspection,
+            nativeLibraryLoaded = true,
+            sampleRateHz = 22050,
+            numSpeakers = 1,
+            directAnalysis = emptyDirect,
+            callbackInvocations = 0,
+            callbackSampleCount = 0L,
+            callbackReturnedSamples = 0L,
+            synthesisDurationMs = 18L
+        )
+        assertEquals(SpeechDiagnosticCategory.SYNTHESIS_EMPTY_AUDIO, emptyReport.category)
+        assertEquals("D1 MODEL_READY", emptyReport.d1ModelStatus)
+        assertEquals("D2 NATIVE_READY", emptyReport.d2NativeStatus)
+        assertEquals("D3 DIRECT_GENERATE_EMPTY", emptyReport.d3DirectGenerateStatus)
+        assertEquals("D4 CALLBACK_EMPTY", emptyReport.d4CallbackStatus)
+        assertEquals("D5 AUDIO_TRACK_NOT_TESTED", emptyReport.d5AudioTrackStatus)
+        assertEquals(0L, emptyReport.sampleCount)
+
+        val pcm = FloatArray(11025) { if (it % 2 == 0) 0.3f else -0.3f }
+        val nonZeroDirect = SpeechDiagnosticSupport.analyzePcmSamples(pcm, 22050)
+        val directOnlySuccess = SpeechDiagnosticSupport.buildSynthesisDiagnosticReport(
+            phrase = SpeechEngine.DIAGNOSTIC_TEST_PHRASE,
+            inspection = readyInspection,
+            nativeLibraryLoaded = true,
+            sampleRateHz = 22050,
+            numSpeakers = 1,
+            directAnalysis = nonZeroDirect,
+            callbackInvocations = 0,
+            callbackSampleCount = 0L,
+            callbackReturnedSamples = 0L,
+            synthesisDurationMs = 95L,
+            firstAudioLatencyMs = 100L,
+            audioPlaybackDurationMs = 500L,
+            audioTrackInitialized = true,
+            audioTrackPlayed = true,
+            routedDeviceSummary = "routed=SPEAKER"
+        )
+        assertEquals(SpeechDiagnosticCategory.TTS_SUCCESS, directOnlySuccess.category)
+        assertEquals("D3 DIRECT_GENERATE_OK", directOnlySuccess.d3DirectGenerateStatus)
+        assertEquals("D4 CALLBACK_EMPTY", directOnlySuccess.d4CallbackStatus)
+        assertEquals("D5 AUDIO_TRACK_OK", directOnlySuccess.d5AudioTrackStatus)
+        assertEquals("direct_generate", directOnlySuccess.synthesisMode)
+        assertEquals(11025L, directOnlySuccess.sampleCount)
+        assertEquals(500L, directOnlySuccess.audioDurationMs)
+    }
 }
+

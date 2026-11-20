@@ -69,11 +69,12 @@ class TurkishTtsModelManager(
 
     private val modelsBaseDir = File(baseFilesDir, "tts_models")
     private val modelDir = File(modelsBaseDir, MODEL_ID)
-    private val readyMarker = File(modelDir, ".model_ready_v1")
+    private val readyMarkerV2 = File(modelDir, ".model_ready_v2")
+    private val legacyReadyMarkerV1 = File(modelDir, ".model_ready_v1")
 
     fun inspectModelDirectory(logDetails: Boolean = true): ModelDirectoryInspection {
         val dirExists = modelDir.isDirectory
-        val markerExists = readyMarker.isFile
+        val markerExists = readyMarkerV2.isFile || legacyReadyMarkerV1.isFile
 
         val existingFiles = if (dirExists) {
             modelDir.walkTopDown()
@@ -95,13 +96,21 @@ class TurkishTtsModelManager(
         val trLangExists = File(espeakDir, "lang/trk/tr").let { it.isFile && it.length() > 0L }
         val trDictExists = File(espeakDir, "tr_dict").let { it.isFile && it.length() > 0L }
 
+        val tokensContentValid = isTokensFileValid(tokens)
         val onnxExists = onnx.isFile
         val onnxSize = if (onnxExists) onnx.length() else 0L
         val tokensExists = tokens.isFile
         val tokensSize = if (tokensExists) tokens.length() else 0L
         val espeakExists = espeakDir.isDirectory
         val jsonExists = jsonConfig?.isFile == true
-        val configExists = tokensExists && tokensSize > 0L && espeakExists && phontabExists && phondataExists && phonindexExists
+        val configExists = tokensExists &&
+            tokensContentValid &&
+            espeakExists &&
+            phontabExists &&
+            phondataExists &&
+            phonindexExists &&
+            trLangExists &&
+            trDictExists
 
         val inspection = ModelDirectoryInspection(
             storageLocation = "APP_INTERNAL_STORAGE (filesDir/tts_models/$MODEL_ID)",
@@ -160,14 +169,23 @@ class TurkishTtsModelManager(
         if (logInspection) {
             inspectModelDirectory(logDetails = true)
         }
-        if (!readyMarker.isFile || !modelDir.isDirectory) return null
-        val onnx = findOnnxFile(modelDir) ?: return null
-        val tokens = findFileNamed(modelDir, "tokens.txt") ?: return null
-        val espeakDir = findDirNamed(modelDir, "espeak-ng-data") ?: return null
-        if (onnx.length() < MIN_ONNX_SIZE_BYTES || tokens.length() <= 0L) return null
-        if (!File(espeakDir, "phontab").let { it.isFile && it.length() > 0L }) return null
-        if (!File(espeakDir, "phondata").let { it.isFile && it.length() > 0L }) return null
-        if (!File(espeakDir, "phonindex").let { it.isFile && it.length() > 0L }) return null
+        if (!modelDir.isDirectory) return null
+        val hasMarker = readyMarkerV2.isFile || legacyReadyMarkerV1.isFile
+        if (!hasMarker) return null
+
+        val onnx = findOnnxFile(modelDir) ?: return invalidateMarkersAndNull()
+        val tokens = findFileNamed(modelDir, "tokens.txt") ?: return invalidateMarkersAndNull()
+        val espeakDir = findDirNamed(modelDir, "espeak-ng-data") ?: return invalidateMarkersAndNull()
+
+        if (!isOnnxValid(onnx) || !isTokensFileValid(tokens) || !isEspeakDataDirValid(espeakDir)) {
+            Log.w(TAG, "Existing model installation failed strict integrity checks; invalidating markers for clean re-download.")
+            return invalidateMarkersAndNull()
+        }
+
+        if (!readyMarkerV2.isFile) {
+            runCatching { readyMarkerV2.writeText("ok") }
+        }
+
         return ResolvedTurkishModelPaths(
             rootDir = modelDir,
             onnxFile = onnx,
@@ -175,6 +193,12 @@ class TurkishTtsModelManager(
             espeakDataDir = espeakDir,
             jsonConfigFile = findOnnxJsonFile(modelDir)
         )
+    }
+
+    private fun invalidateMarkersAndNull(): ResolvedTurkishModelPaths? {
+        runCatching { readyMarkerV2.delete() }
+        runCatching { legacyReadyMarkerV1.delete() }
+        return null
     }
 
     suspend fun isModelDownloaded(): Boolean = withContext(Dispatchers.IO) {
@@ -217,18 +241,16 @@ class TurkishTtsModelManager(
                 val stagedOnnx = findOnnxFile(stagingDir)
                 val stagedTokens = findFileNamed(stagingDir, "tokens.txt")
                 val stagedEspeak = findDirNamed(stagingDir, "espeak-ng-data")
-                val espeakValid = stagedEspeak != null &&
-                    File(stagedEspeak, "phontab").let { it.isFile && it.length() > 0L } &&
-                    File(stagedEspeak, "phondata").let { it.isFile && it.length() > 0L } &&
-                    File(stagedEspeak, "phonindex").let { it.isFile && it.length() > 0L }
+                val validOnnx = stagedOnnx != null && isOnnxValid(stagedOnnx)
+                val validTokens = stagedTokens != null && isTokensFileValid(stagedTokens)
+                val validEspeak = stagedEspeak != null && isEspeakDataDirValid(stagedEspeak)
 
-                if (stagedOnnx == null || stagedOnnx.length() < MIN_ONNX_SIZE_BYTES ||
-                    stagedTokens == null || stagedTokens.length() <= 0L || !espeakValid
-                ) {
+                if (!validOnnx || !validTokens || !validEspeak) {
                     stagingDir.deleteRecursively()
                     return@withContext ModelDownloadResult.Failure(
                         errorType = SpeechErrorType.MODEL_NOT_FOUND,
-                        reason = "İndirilen Türkçe TTS arşivinde beklenen model dosyaları bulunamadı."
+                        reason = "İndirilen Türkçe TTS arşivinde beklenen model/espeak-ng-data dosyaları eksik veya bozuk " +
+                            "(onnx=$validOnnx, tokens=$validTokens, espeak=$validEspeak)."
                     )
                 }
 
@@ -240,7 +262,7 @@ class TurkishTtsModelManager(
                     stagingDir.deleteRecursively()
                 }
 
-                File(modelDir, ".model_ready_v1").writeText("ok")
+                readyMarkerV2.writeText("ok")
                 archiveFile.delete()
 
                 val resolved = resolveModelPathsOrNull(logInspection = true)
@@ -444,6 +466,41 @@ class TurkishTtsModelManager(
         if (!dir.isDirectory) return null
         return dir.walkTopDown()
             .firstOrNull { it.isDirectory && it.name == name }
+    }
+
+    private fun isOnnxValid(onnxFile: File): Boolean {
+        return onnxFile.isFile && onnxFile.length() >= MIN_ONNX_SIZE_BYTES
+    }
+
+    private fun isTokensFileValid(tokensFile: File): Boolean {
+        if (!tokensFile.isFile || tokensFile.length() <= 0L) return false
+        return runCatching {
+            val lines = tokensFile.readLines().filter { it.isNotBlank() }
+            if (lines.isEmpty()) return@runCatching false
+            // Piper VITS models require '_' (pad), '^' (bos), '$' (eos) in tokens.txt
+            val tokens = lines.mapNotNull { line ->
+                val trimmed = line.trimStart()
+                when {
+                    line.startsWith(" ") -> " "
+                    else -> trimmed.substringBefore(' ', missingDelimiterValue = "").ifEmpty { null }
+                }
+            }.toSet()
+            tokens.contains("_") && tokens.contains("^") && tokens.contains("$")
+        }.getOrDefault(false)
+    }
+
+    private fun isEspeakDataDirValid(espeakDir: File): Boolean {
+        if (!espeakDir.isDirectory) return false
+        val requiredFiles = listOf(
+            "phontab",
+            "phondata",
+            "phonindex",
+            "lang/trk/tr",
+            "tr_dict"
+        )
+        return requiredFiles.all { rel ->
+            File(espeakDir, rel).let { it.isFile && it.length() > 0L }
+        }
     }
 
     companion object {
