@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SubCast TR</string>
+    <string name="notification_channel_capture_name">Ekran Yakalama Servisi</string>
+    <string name="notification_channel_capture_desc">PS Remote Play altyazı bölgesi için arka plan ekran yakalama durumu</string>
+    <string name="notification_capture_title">SubCast TR Ekran Yakalama Aktif</string>
+    <string name="notification_capture_text">Canlı kare yakalama çalışıyor. Durdurmak için dokunun.</string>
+    <string name="notification_action_stop">Durdur</string>
+</resources>

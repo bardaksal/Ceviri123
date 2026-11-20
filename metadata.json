@@ -1,0 +1,6 @@
+{
+  "name": "SubCast TR",
+  "description": "PS5 GTA 6 Remote Play gerçek zamanlı ekran yakalama ve Türkçe sesli altyazı çeviri asistanı.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
