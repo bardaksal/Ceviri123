@@ -14,11 +14,15 @@ import com.example.capture.CaptureStateHolder
 import com.example.capture.CaptureStatus
 import com.example.capture.MediaProjectionController
 import com.example.capture.ScreenCaptureService
+import com.example.subtitle.RoiPreferencesRepository
+import com.example.subtitle.SubtitleRoi
+import com.example.subtitle.SubtitleRoiSettings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 data class EnvironmentStatus(
     val isRemotePlayInstalled: Boolean = false,
@@ -29,23 +33,32 @@ data class EnvironmentStatus(
 
 data class CaptureDashboardUiState(
     val session: CaptureSessionState = CaptureSessionState(),
-    val environment: EnvironmentStatus = EnvironmentStatus()
+    val environment: EnvironmentStatus = EnvironmentStatus(),
+    val roiSettings: SubtitleRoiSettings = SubtitleRoiSettings(),
+    val isRoiEditorOpen: Boolean = false
 )
 
 class CaptureViewModel(application: Application) : AndroidViewModel(application) {
 
     private val projectionController = MediaProjectionController(application.applicationContext)
+    private val roiRepository = RoiPreferencesRepository(application.applicationContext)
+
     private val environmentState = MutableStateFlow(readEnvironmentStatus())
+    private val isRoiEditorOpen = MutableStateFlow(false)
 
     val uiState: StateFlow<CaptureDashboardUiState> = combine(
         CaptureStateHolder.state,
-        environmentState
-    ) { session, environment ->
+        environmentState,
+        roiRepository.settingsFlow,
+        isRoiEditorOpen
+    ) { session, environment, roiSettings, editorOpen ->
         CaptureDashboardUiState(
             session = session.copy(
                 hardwareInfo = session.hardwareInfo ?: projectionController.inspectHardwareAcceleration()
             ),
-            environment = environment
+            environment = environment,
+            roiSettings = roiSettings,
+            isRoiEditorOpen = editorOpen
         )
     }.stateIn(
         scope = viewModelScope,
@@ -58,6 +71,33 @@ class CaptureViewModel(application: Application) : AndroidViewModel(application)
 
     fun refreshEnvironmentChecks() {
         environmentState.value = readEnvironmentStatus()
+    }
+
+    fun openRoiEditor() {
+        isRoiEditorOpen.value = true
+    }
+
+    fun closeRoiEditor() {
+        isRoiEditorOpen.value = false
+    }
+
+    fun saveRoi(roi: SubtitleRoi) {
+        viewModelScope.launch {
+            roiRepository.saveRoi(roi)
+            isRoiEditorOpen.value = false
+        }
+    }
+
+    fun resetRoiToDefault() {
+        viewModelScope.launch {
+            roiRepository.resetRoi()
+        }
+    }
+
+    fun updateOcrIntervalMs(intervalMs: Long) {
+        viewModelScope.launch {
+            roiRepository.updateOcrIntervalMs(intervalMs)
+        }
     }
 
     fun createMediaProjectionIntent(): Intent? {

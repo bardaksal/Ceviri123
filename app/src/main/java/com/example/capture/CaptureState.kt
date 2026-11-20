@@ -10,6 +10,15 @@ enum class CaptureStatus {
     ERROR
 }
 
+enum class OcrStatus {
+    IDLE,
+    WAITING_FOR_FRAME,
+    RUNNING,
+    READY,
+    MODEL_UNAVAILABLE,
+    ERROR
+}
+
 data class HardwareAccelerationInfo(
     val apiLevel: Int,
     val supportsHardwareBuffer: Boolean,
@@ -31,13 +40,27 @@ data class FrameTelemetry(
     val stridePaddingBytes: Int = 0
 )
 
+data class OcrState(
+    val status: OcrStatus = OcrStatus.IDLE,
+    val latestText: String? = null,
+    val confidence: Float? = null,
+    val lastRecognitionElapsedMs: Long? = null,
+    val processingTimeMs: Long? = null,
+    val sourceFrameIndex: Long = 0L,
+    val recognitionCount: Long = 0L,
+    val isNewText: Boolean = false,
+    val errorMessage: String? = null,
+    val engineLabel: String = "On-device ML Kit"
+)
+
 data class CaptureSessionState(
     val status: CaptureStatus = CaptureStatus.IDLE,
     val telemetry: FrameTelemetry? = null,
     val previewBitmap: Bitmap? = null,
     val errorMessage: String? = null,
     val isContentVisible: Boolean = true,
-    val hardwareInfo: HardwareAccelerationInfo? = null
+    val hardwareInfo: HardwareAccelerationInfo? = null,
+    val ocrState: OcrState = OcrState()
 )
 
 data class CapturedFrame(

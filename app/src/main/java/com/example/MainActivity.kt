@@ -4,10 +4,10 @@ import android.Manifest
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.Lifecycle
@@ -17,6 +17,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.CaptureViewModel
 import com.example.ui.MainScreen
+import com.example.ui.RoiEditorScreen
 import com.example.ui.theme.SubCastTheme
 
 class MainActivity : ComponentActivity() {
@@ -63,22 +64,33 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                MainScreen(
-                    uiState = uiState,
-                    onStartCaptureClick = {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                            viewModel.needsNotificationPermission()
-                        ) {
-                            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        } else {
-                            launchMediaProjectionConsent()
-                        }
-                    },
-                    onStopCaptureClick = { viewModel.stopCapture() },
-                    onLaunchRemotePlayClick = { viewModel.launchRemotePlayIfInstalled() },
-                    onRefreshChecksClick = { viewModel.refreshEnvironmentChecks() },
-                    onDismissErrorClick = { viewModel.dismissError() }
-                )
+                if (uiState.isRoiEditorOpen) {
+                    RoiEditorScreen(
+                        initialRoi = uiState.roiSettings.roi,
+                        previewBitmap = uiState.session.previewBitmap,
+                        onSaveRoi = { savedRoi -> viewModel.saveRoi(savedRoi) },
+                        onCancel = { viewModel.closeRoiEditor() }
+                    )
+                } else {
+                    MainScreen(
+                        uiState = uiState,
+                        onStartCaptureClick = {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                viewModel.needsNotificationPermission()
+                            ) {
+                                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            } else {
+                                launchMediaProjectionConsent()
+                            }
+                        },
+                        onStopCaptureClick = { viewModel.stopCapture() },
+                        onOpenRoiEditorClick = { viewModel.openRoiEditor() },
+                        onUpdateOcrIntervalMs = { intervalMs -> viewModel.updateOcrIntervalMs(intervalMs) },
+                        onLaunchRemotePlayClick = { viewModel.launchRemotePlayIfInstalled() },
+                        onRefreshChecksClick = { viewModel.refreshEnvironmentChecks() },
+                        onDismissErrorClick = { viewModel.dismissError() }
+                    )
+                }
             }
         }
     }

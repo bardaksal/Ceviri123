@@ -17,19 +17,55 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.IntentCompat
 import com.example.MainActivity
 import com.example.R
+import com.example.subtitle.OcrPipelineWorker
+import com.example.subtitle.RealMlKitOcrEngine
+import com.example.subtitle.RoiPreferencesRepository
+import com.example.subtitle.SubtitleRoi
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 class ScreenCaptureService : Service() {
 
     private lateinit var projectionController: MediaProjectionController
-    private val frameCapture = FrameCapture()
-    private val frameProcessor = FrameProcessor()
+    private lateinit var roiRepository: RoiPreferencesRepository
+    private val ocrEngine = RealMlKitOcrEngine()
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
+    @Volatile
+    private var activeRoi: SubtitleRoi = SubtitleRoi.DEFAULT
+
+    private lateinit var ocrPipelineWorker: OcrPipelineWorker
+    private lateinit var frameProcessor: FrameProcessor
+    private val frameCapture = FrameCapture()
+
+    private var roiObserverJob: Job? = null
     private var mediaProjection: MediaProjection? = null
     private var projectionCallback: MediaProjection.Callback? = null
 
     override fun onCreate() {
         super.onCreate()
         projectionController = MediaProjectionController(applicationContext)
+        roiRepository = RoiPreferencesRepository(applicationContext)
+
+        ocrPipelineWorker = OcrPipelineWorker(
+            ocrEngine = ocrEngine,
+            onStateChanged = { ocrState ->
+                CaptureStateHolder.update { current ->
+                    current.copy(ocrState = ocrState)
+                }
+            }
+        )
+
+        frameProcessor = FrameProcessor(
+            onBeforeBitmapRecycle = { capturedFrame ->
+                dispatchRoiToOcrIfReady(capturedFrame)
+            }
+        )
+
         createNotificationChannel()
     }
 
@@ -81,8 +117,8 @@ class ScreenCaptureService : Service() {
                 )
             }
 
-            // Clean up any prior session cleanly before initializing a new one
             releaseProjectionObjects()
+            observeRoiSettings()
 
             val projection = projectionController.acquireMediaProjection(resultCode, resultData)
             if (projection == null) {
@@ -112,6 +148,7 @@ class ScreenCaptureService : Service() {
             projectionCallback = callback
 
             val bounds = projectionController.queryMaximumDisplayBounds()
+            ocrPipelineWorker.start()
             frameProcessor.start()
             frameCapture.start(
                 mediaProjection = projection,
@@ -145,6 +182,33 @@ class ScreenCaptureService : Service() {
         }
     }
 
+    private fun observeRoiSettings() {
+        roiObserverJob?.cancel()
+        roiObserverJob = serviceScope.launch {
+            roiRepository.settingsFlow.collect { settings ->
+                val changed = activeRoi != settings.roi
+                activeRoi = settings.roi
+                ocrPipelineWorker.minIntervalMs = settings.ocrIntervalMs
+                if (changed) {
+                    ocrPipelineWorker.resetDeduplication()
+                }
+            }
+        }
+    }
+
+    private fun dispatchRoiToOcrIfReady(frame: CapturedFrame) {
+        if (!ocrPipelineWorker.shouldAcceptFrame(frame.timestampElapsedMs)) {
+            return
+        }
+        val roi = activeRoi
+        val cropped = roi.cropBitmap(frame.bitmap) ?: return
+        ocrPipelineWorker.submitRoiBitmap(
+            roiBitmap = cropped,
+            frameIndex = frame.frameIndex,
+            capturedElapsedMs = frame.timestampElapsedMs
+        )
+    }
+
     private fun stopCaptureSession(stoppedBySystem: Boolean) {
         releaseProjectionObjects()
         CaptureStateHolder.update { current ->
@@ -167,8 +231,11 @@ class ScreenCaptureService : Service() {
     }
 
     private fun releaseProjectionObjects() {
+        roiObserverJob?.cancel()
+        roiObserverJob = null
         frameCapture.stop()
         frameProcessor.stop()
+        ocrPipelineWorker.stop()
         val projection = mediaProjection
         val callback = projectionCallback
         if (projection != null) {
@@ -244,6 +311,8 @@ class ScreenCaptureService : Service() {
     override fun onDestroy() {
         releaseProjectionObjects()
         frameProcessor.release()
+        ocrPipelineWorker.release()
+        serviceScope.cancel()
         super.onDestroy()
     }
 

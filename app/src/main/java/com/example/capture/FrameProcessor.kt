@@ -14,10 +14,13 @@ import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Latest-frame-only pipeline coordinator.
- * Phase 1-2 updates live capture telemetry and downscaled UI preview.
- * Phase 3-4 will attach ROI cropping, change detection, and ML Kit OCR observers here.
+ * Updates live capture telemetry, produces throttled UI preview thumbnails,
+ * and invokes [onBeforeBitmapRecycle] so downstream ROI cropping can run
+ * before the full-resolution frame bitmap is recycled.
  */
-class FrameProcessor {
+class FrameProcessor(
+    private val onBeforeBitmapRecycle: ((CapturedFrame) -> Unit)? = null
+) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val latestPendingFrame = AtomicReference<CapturedFrame?>(null)
@@ -94,16 +97,23 @@ class FrameProcessor {
             )
         }
 
-        if (frame.frameIndex == 1L || frame.frameIndex % 30L == 0L) {
+        // Allow downstream consumer (e.g. ROI crop -> decoupled OCR worker) to extract its slice
+        // without blocking FrameCapture and before releasing the full-resolution bitmap.
+        runCatching {
+            onBeforeBitmapRecycle?.invoke(frame)
+        }.onFailure { err ->
+            Log.e(TAG, "Downstream frame hook failed", err)
+        }
+
+        if (frame.frameIndex == 1L || frame.frameIndex % 60L == 0L) {
             Log.d(
                 TAG,
                 "SUBCAST_CAPTURE frame=${frame.frameIndex} res=${frame.width}x${frame.height} " +
                     "convMs=${frame.conversionTimeMs} fps=${"%.1f".format(lastMeasuredFps)} " +
-                    "dropped=${frame.droppedFrames} hwBuf=${frame.usedHardwareBuffer}"
+                    "dropped=${frame.droppedFrames}"
             )
         }
 
-        // Release raw full-resolution frame bitmap immediately after downstream processing
         if (!frame.bitmap.isRecycled) {
             frame.bitmap.recycle()
         }

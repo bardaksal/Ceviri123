@@ -1,9 +1,11 @@
 package com.example.ui
 
+import android.os.SystemClock
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -34,8 +36,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Monitor
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PlayArrow
@@ -43,6 +45,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.ScreenShare
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.StopScreenShare
+import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.outlined.LockClock
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -53,19 +56,27 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
@@ -74,6 +85,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.capture.CaptureStatus
 import com.example.capture.FrameTelemetry
+import com.example.capture.OcrState
+import com.example.capture.OcrStatus
+import com.example.subtitle.SubtitleRoi
+import com.example.subtitle.SubtitleRoiSettings
 import com.example.ui.theme.ElectricCyan
 import com.example.ui.theme.ElectricCyanDim
 import com.example.ui.theme.ObsidianBackground
@@ -89,12 +104,16 @@ import com.example.ui.theme.SlateSurfaceElevated
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 @Composable
 fun MainScreen(
     uiState: CaptureDashboardUiState,
     onStartCaptureClick: () -> Unit,
     onStopCaptureClick: () -> Unit,
+    onOpenRoiEditorClick: () -> Unit,
+    onUpdateOcrIntervalMs: (Long) -> Unit,
     onLaunchRemotePlayClick: () -> Unit,
     onRefreshChecksClick: () -> Unit,
     onDismissErrorClick: () -> Unit,
@@ -169,22 +188,30 @@ fun MainScreen(
                                 onStartCaptureClick = onStartCaptureClick,
                                 onStopCaptureClick = onStopCaptureClick
                             )
+                            SubtitleOcrResultCard(
+                                ocrState = uiState.session.ocrState,
+                                isCaptureActive = isCaptureActive
+                            )
                             SystemReadinessCard(
                                 uiState = uiState,
                                 onLaunchRemotePlayClick = onLaunchRemotePlayClick
                             )
-                            PipelineRoadmapCard()
                         }
 
                         Column(
                             modifier = Modifier.weight(1.15f),
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            LiveFramePreviewCard(uiState = uiState)
-                            TelemetryGridCard(
-                                telemetry = uiState.session.telemetry,
-                                hardwareSummary = uiState.environment.hardwareSummary
+                            LiveFramePreviewCard(
+                                uiState = uiState,
+                                onOpenRoiEditorClick = onOpenRoiEditorClick
                             )
+                            CaptureAndOcrRateCard(
+                                telemetry = uiState.session.telemetry,
+                                ocrIntervalMs = uiState.roiSettings.ocrIntervalMs,
+                                onUpdateOcrIntervalMs = onUpdateOcrIntervalMs
+                            )
+                            PipelineRoadmapCard()
                         }
                     }
                 } else {
@@ -202,10 +229,18 @@ fun MainScreen(
                             onStartCaptureClick = onStartCaptureClick,
                             onStopCaptureClick = onStopCaptureClick
                         )
-                        LiveFramePreviewCard(uiState = uiState)
-                        TelemetryGridCard(
+                        SubtitleOcrResultCard(
+                            ocrState = uiState.session.ocrState,
+                            isCaptureActive = isCaptureActive
+                        )
+                        LiveFramePreviewCard(
+                            uiState = uiState,
+                            onOpenRoiEditorClick = onOpenRoiEditorClick
+                        )
+                        CaptureAndOcrRateCard(
                             telemetry = uiState.session.telemetry,
-                            hardwareSummary = uiState.environment.hardwareSummary
+                            ocrIntervalMs = uiState.roiSettings.ocrIntervalMs,
+                            onUpdateOcrIntervalMs = onUpdateOcrIntervalMs
                         )
                         SystemReadinessCard(
                             uiState = uiState,
@@ -245,7 +280,7 @@ private fun TopHeaderBar(
                     border = BorderStroke(1.dp, ElectricCyan.copy(alpha = 0.45f))
                 ) {
                     Text(
-                        text = "PHASE 1–2",
+                        text = "PHASE 3 • OCR",
                         style = MaterialTheme.typography.labelSmall,
                         color = ElectricCyan,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
@@ -254,7 +289,7 @@ private fun TopHeaderBar(
             }
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = "PS5 Remote Play • MediaProjection Frame Capture",
+                text = "PS5 Remote Play • Altyazı ROI & On-Device OCR",
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary,
                 maxLines = 1,
@@ -397,9 +432,9 @@ private fun CaptureActionCard(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = if (isCaptureActive) {
-                            "Arka Plan Ekran Yakalama Aktif"
+                            "Canlı Altyazı Yakalama Aktif"
                         } else {
-                            "MediaProjection Yakalamaya Hazır"
+                            "Ekran Yakalamayı Başlatın"
                         },
                         style = MaterialTheme.typography.titleLarge,
                         color = TextPrimary
@@ -407,13 +442,13 @@ private fun CaptureActionCard(
                     Text(
                         text = when (status) {
                             CaptureStatus.ACTIVE ->
-                                "PS Remote Play'e geçebilirsiniz. Kareler latest-frame-only olarak yakalanıyor."
+                                "PS Remote Play'e geçin; seçili ROI alanı on-device ML Kit ile okunuyor."
                             CaptureStatus.STARTING ->
-                                "Foreground servis ve VirtualDisplay başlatılıyor..."
+                                "MediaProjection servisi ve OCR hattı başlatılıyor..."
                             CaptureStatus.STOPPED_BY_SYSTEM ->
-                                "Sistem oturumu sonlandırdı. Yeniden başlatabilirsiniz."
+                                "Yakalama sistem tarafından sonlandırıldı."
                             else ->
-                                "Sistem izni vererek VirtualDisplay + ImageReader yakalamayı doğrulayın."
+                                "Remote Play görüntüsünü okumak için MediaProjection izni verin."
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextSecondary
@@ -461,16 +496,194 @@ private fun CaptureActionCard(
 }
 
 @Composable
-private fun LiveFramePreviewCard(uiState: CaptureDashboardUiState) {
+private fun SubtitleOcrResultCard(
+    ocrState: OcrState,
+    isCaptureActive: Boolean
+) {
+    var nowElapsedMs by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
+
+    LaunchedEffect(isCaptureActive, ocrState.lastRecognitionElapsedMs) {
+        nowElapsedMs = SystemClock.elapsedRealtime()
+        while (isCaptureActive && ocrState.lastRecognitionElapsedMs != null) {
+            delay(500L)
+            nowElapsedMs = SystemClock.elapsedRealtime()
+        }
+    }
+
+    val statusColor = when (ocrState.status) {
+        OcrStatus.READY -> SignalEmerald
+        OcrStatus.RUNNING -> ElectricCyan
+        OcrStatus.WAITING_FOR_FRAME -> SignalAmber
+        OcrStatus.MODEL_UNAVAILABLE, OcrStatus.ERROR -> SignalCoral
+        OcrStatus.IDLE -> TextMuted
+    }
+
+    val statusText = when (ocrState.status) {
+        OcrStatus.IDLE -> "IDLE"
+        OcrStatus.WAITING_FOR_FRAME -> "WAITING FOR FRAME"
+        OcrStatus.RUNNING -> "RUNNING"
+        OcrStatus.READY -> "READY"
+        OcrStatus.MODEL_UNAVAILABLE -> "MODEL UNAVAILABLE"
+        OcrStatus.ERROR -> "ERROR"
+    }
+
+    val ageText = ocrState.lastRecognitionElapsedMs?.let { lastMs ->
+        val diff = (nowElapsedMs - lastMs).coerceAtLeast(0L)
+        if (diff < 1000L) "$diff ms" else "${"%.1f".format(diff / 1000f)} sn"
+    } ?: "—"
+
+    val confidenceText = ocrState.confidence?.let { conf ->
+        "${(conf * 100f).roundToInt()}%"
+    } ?: "UNKNOWN"
+
+    Card(
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = SlateSurface),
+        border = BorderStroke(
+            1.dp,
+            if (ocrState.status == OcrStatus.READY && !ocrState.latestText.isNullOrBlank()) {
+                SignalEmerald.copy(alpha = 0.55f)
+            } else {
+                SlateBorder
+            }
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("ocr_result_card")
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Subtitles,
+                        contentDescription = "Altyazı OCR durumu",
+                        tint = statusColor
+                    )
+                    Text(
+                        text = "ALTYAZI OCR",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TextPrimary
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = SlateSurfaceElevated,
+                    border = BorderStroke(1.dp, statusColor.copy(alpha = 0.55f)),
+                    modifier = Modifier.testTag("ocr_status_badge")
+                ) {
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = statusColor,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            Surface(
+                shape = MaterialTheme.shapes.medium,
+                color = ObsidianBackground,
+                border = BorderStroke(1.dp, SlateBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "SON ALGILANAN İNGİLİZCE METİN",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextMuted
+                    )
+                    Text(
+                        text = ocrState.latestText ?: "Henüz altyazı algılanmadı",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = if (ocrState.latestText != null) TextPrimary else TextMuted,
+                        modifier = Modifier.testTag("ocr_latest_text")
+                    )
+                    if (!ocrState.errorMessage.isNullOrBlank()) {
+                        Text(
+                            text = ocrState.errorMessage,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SignalCoral
+                        )
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                TelemetryMetricTile(
+                    label = "OCR SÜRESİ",
+                    value = ocrState.processingTimeMs?.let { "$it ms" } ?: "—",
+                    accentColor = ElectricCyan,
+                    modifier = Modifier.weight(1f)
+                )
+                TelemetryMetricTile(
+                    label = "SON GÜNCELLEME",
+                    value = ageText,
+                    accentColor = SignalEmerald,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                TelemetryMetricTile(
+                    label = "CONFIDENCE",
+                    value = confidenceText,
+                    accentColor = if (ocrState.confidence != null) TextPrimary else TextSecondary,
+                    modifier = Modifier.weight(1f)
+                )
+                TelemetryMetricTile(
+                    label = "MOTOR",
+                    value = ocrState.engineLabel,
+                    accentColor = TextSecondary,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LiveFramePreviewCard(
+    uiState: CaptureDashboardUiState,
+    onOpenRoiEditorClick: () -> Unit
+) {
     val previewBitmap = uiState.session.previewBitmap
     val telemetry = uiState.session.telemetry
     val isActive = uiState.session.status == CaptureStatus.ACTIVE
+    val activeRoi = uiState.roiSettings.roi
 
     val imageBitmap = remember(previewBitmap) {
         if (previewBitmap != null && !previewBitmap.isRecycled) {
             previewBitmap.asImageBitmap()
         } else {
             null
+        }
+    }
+
+    val previewAspectRatio = remember(previewBitmap) {
+        if (previewBitmap != null && !previewBitmap.isRecycled && previewBitmap.height > 0) {
+            (previewBitmap.width.toFloat() / previewBitmap.height.toFloat()).coerceIn(0.45f, 2.4f)
+        } else {
+            16f / 9f
         }
     }
 
@@ -492,7 +705,7 @@ private fun LiveFramePreviewCard(uiState: CaptureDashboardUiState) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Canlı Ekran Yakalama Önizlemesi",
+                    text = "Canlı Görüntü & Altyazı ROI",
                     style = MaterialTheme.typography.titleMedium,
                     color = TextPrimary
                 )
@@ -508,7 +721,7 @@ private fun LiveFramePreviewCard(uiState: CaptureDashboardUiState) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
+                    .aspectRatio(previewAspectRatio)
                     .clip(MaterialTheme.shapes.medium)
                     .background(ObsidianBackground)
                     .border(1.dp, SlateBorder, MaterialTheme.shapes.medium),
@@ -518,10 +731,15 @@ private fun LiveFramePreviewCard(uiState: CaptureDashboardUiState) {
                     Image(
                         bitmap = imageBitmap,
                         contentDescription = "MediaProjection ile yakalanan canlı ekran görüntüsü",
-                        contentScale = ContentScale.Fit,
+                        contentScale = ContentScale.FillBounds,
                         modifier = Modifier
                             .fillMaxSize()
                             .testTag("captured_frame_image")
+                    )
+
+                    RoiPreviewOverlay(
+                        roi = activeRoi,
+                        modifier = Modifier.fillMaxSize()
                     )
 
                     Row(
@@ -539,7 +757,7 @@ private fun LiveFramePreviewCard(uiState: CaptureDashboardUiState) {
                             )
                         ) {
                             Text(
-                                text = if (isActive) "LIVE • VIRTUAL DISPLAY" else "SON YAKALANAN KARE",
+                                text = if (isActive) "LIVE • ROI ACTIVE" else "SON KARE",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (isActive) SignalEmerald else SignalAmber,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -556,7 +774,7 @@ private fun LiveFramePreviewCard(uiState: CaptureDashboardUiState) {
                                 .padding(10.dp)
                         ) {
                             Text(
-                                text = "Yakalanan içerik şu an arka planda veya görünür değil",
+                                text = "Yakalanan pencere şu an görünür değil",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = SignalAmber,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -564,6 +782,10 @@ private fun LiveFramePreviewCard(uiState: CaptureDashboardUiState) {
                         }
                     }
                 } else {
+                    RoiPreviewOverlay(
+                        roi = activeRoi,
+                        modifier = Modifier.fillMaxSize()
+                    )
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -573,30 +795,97 @@ private fun LiveFramePreviewCard(uiState: CaptureDashboardUiState) {
                             imageVector = Icons.Filled.PlayArrow,
                             contentDescription = "Henüz kare yakalanmadı",
                             tint = TextMuted,
-                            modifier = Modifier.size(36.dp)
+                            modifier = Modifier.size(32.dp)
                         )
                         Text(
-                            text = "Henüz yakalanan ekran karesi yok",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = TextSecondary
-                        )
-                        Text(
-                            text = "Ekran Yakalamayı Başlat'a dokunup izin verdiğinizde gerçek VirtualDisplay karesi burada görünür.",
+                            text = "Ekran yakalama başlatıldığında canlı kare ve ROI alanı burada görünür.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = TextMuted
                         )
                     }
                 }
             }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (uiState.roiSettings.isUserConfigured) {
+                        "Kayıtlı ROI: L:${"%.2f".format(activeRoi.left)} T:${"%.2f".format(activeRoi.top)} " +
+                            "R:${"%.2f".format(activeRoi.right)} B:${"%.2f".format(activeRoi.bottom)}"
+                    } else {
+                        "Varsayılan alt bölge ROI aktif"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            OutlinedButton(
+                onClick = onOpenRoiEditorClick,
+                shape = MaterialTheme.shapes.medium,
+                border = BorderStroke(1.dp, ElectricCyan.copy(alpha = 0.6f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .minimumInteractiveComponentSize()
+                    .testTag("open_roi_editor_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.CropFree,
+                    contentDescription = null,
+                    tint = ElectricCyan,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Altyazı Alanını Ayarla",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = ElectricCyan
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun TelemetryGridCard(
-    telemetry: FrameTelemetry?,
-    hardwareSummary: String
+private fun RoiPreviewOverlay(
+    roi: SubtitleRoi,
+    modifier: Modifier = Modifier
 ) {
+    Canvas(modifier = modifier) {
+        val l = roi.left * size.width
+        val t = roi.top * size.height
+        val r = roi.right * size.width
+        val b = roi.bottom * size.height
+        val scrim = Color.Black.copy(alpha = 0.32f)
+
+        drawRect(scrim, Offset.Zero, Size(size.width, t))
+        drawRect(scrim, Offset(0f, b), Size(size.width, size.height - b))
+        drawRect(scrim, Offset(0f, t), Size(l, b - t))
+        drawRect(scrim, Offset(r, t), Size(size.width - r, b - t))
+
+        drawRect(
+            color = ElectricCyan,
+            topLeft = Offset(l, t),
+            size = Size(r - l, b - t),
+            style = Stroke(width = 2.dp.toPx())
+        )
+    }
+}
+
+@Composable
+private fun CaptureAndOcrRateCard(
+    telemetry: FrameTelemetry?,
+    ocrIntervalMs: Long,
+    onUpdateOcrIntervalMs: (Long) -> Unit
+) {
+    val approxHz = 1000f / ocrIntervalMs.coerceAtLeast(1L)
+
     Card(
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(containerColor = SlateSurface),
@@ -609,21 +898,11 @@ private fun TelemetryGridCard(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Memory,
-                    contentDescription = "Donanım ve kare telemetrisi",
-                    tint = ElectricCyan
-                )
-                Text(
-                    text = "Kare Hattı Telemetrisi",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TextPrimary
-                )
-            }
+            Text(
+                text = "Yakalama ve OCR Frekansı",
+                style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary
+            )
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -635,28 +914,16 @@ private fun TelemetryGridCard(
                     modifier = Modifier.weight(1f)
                 )
                 TelemetryMetricTile(
-                    label = "YAKALAMA HIZI",
+                    label = "CAPTURE FPS",
                     value = if (telemetry != null) "${"%.1f".format(telemetry.captureFps)} FPS" else "—",
                     accentColor = SignalEmerald,
                     modifier = Modifier.weight(1f)
                 )
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
                 TelemetryMetricTile(
-                    label = "KARE DÖNÜŞÜMÜ",
-                    value = if (telemetry != null) "${telemetry.conversionTimeMs} ms" else "—",
-                    accentColor = ElectricCyan,
-                    modifier = Modifier.weight(1f)
-                )
-                TelemetryMetricTile(
-                    label = "ATLANAN / TOPLAM",
-                    value = if (telemetry != null) "${telemetry.droppedFrames} / ${telemetry.frameIndex}" else "—",
+                    label = "ATLANAN",
+                    value = telemetry?.droppedFrames?.toString() ?: "—",
                     accentColor = if ((telemetry?.droppedFrames ?: 0L) > 0L) SignalAmber else TextPrimary,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(0.8f)
                 )
             }
 
@@ -666,27 +933,37 @@ private fun TelemetryGridCard(
                 border = BorderStroke(1.dp, SlateBorder),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
+                Column(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Text(
-                        text = "RUNTIME",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextMuted
-                    )
-                    Text(
-                        text = buildString {
-                            append(hardwareSummary.ifBlank { "Standart" })
-                            if (telemetry != null) {
-                                append(if (telemetry.usedHardwareBuffer) " • HWBuf Active" else " • Plane Copy")
-                            }
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "OCR ÖRNEKLEME ARALIĞI",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextMuted
+                        )
+                        Text(
+                            text = "$ocrIntervalMs ms (~${"%.1f".format(approxHz)}/sn)",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = ElectricCyan
+                        )
+                    }
+                    Slider(
+                        value = ocrIntervalMs.toFloat(),
+                        onValueChange = { onUpdateOcrIntervalMs(it.roundToInt().toLong()) },
+                        valueRange = SubtitleRoiSettings.MIN_OCR_INTERVAL_MS.toFloat()..
+                            SubtitleRoiSettings.MAX_OCR_INTERVAL_MS.toFloat(),
+                        steps = 7,
+                        colors = SliderDefaults.colors(
+                            thumbColor = ElectricCyan,
+                            activeTrackColor = ElectricCyan,
+                            inactiveTrackColor = SlateBorder
+                        )
                     )
                 }
             }
@@ -746,7 +1023,7 @@ private fun SystemReadinessCard(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = "Cihaz ve Modül Durumu",
+                text = "Uygulama ve İzin Durumu",
                 style = MaterialTheme.typography.titleMedium,
                 color = TextPrimary
             )
@@ -754,7 +1031,7 @@ private fun SystemReadinessCard(
             ReadinessRow(
                 icon = Icons.Filled.SportsEsports,
                 title = "REMOTE PLAY",
-                statusText = if (env.isRemotePlayInstalled) "READY" else "NOT DETECTED",
+                statusText = if (env.isRemotePlayInstalled) "INSTALLED" else "NOT DETECTED",
                 isReady = env.isRemotePlayInstalled
             )
 
@@ -774,7 +1051,7 @@ private fun SystemReadinessCard(
             ReadinessRow(
                 icon = Icons.Filled.NotificationsActive,
                 title = "BİLDİRİM İZNİ",
-                statusText = if (env.isNotificationPermissionGranted) "READY" else "REQUIRED",
+                statusText = if (env.isNotificationPermissionGranted) "GRANTED" else "REQUIRED",
                 isReady = env.isNotificationPermissionGranted
             )
 
@@ -803,7 +1080,7 @@ private fun SystemReadinessCard(
                 }
             } else {
                 Text(
-                    text = "Cihazda resmi PS Remote Play paketi (com.playstation.remoteplay) bulunamadı. Yine de herhangi bir ekran içeriği ile MediaProjection yakalamayı test edebilirsiniz.",
+                    text = "Resmi PS Remote Play uygulaması cihazda algılanmadı. Yine de herhangi bir video veya oyun ekranı ile OCR akışını test edebilirsiniz.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextMuted
                 )
@@ -872,7 +1149,7 @@ private fun PipelineRoadmapCard() {
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
-                text = "Aşamalı Pipeline Durumu",
+                text = "Aşama Durumu",
                 style = MaterialTheme.typography.titleMedium,
                 color = TextPrimary
             )
@@ -881,10 +1158,9 @@ private fun PipelineRoadmapCard() {
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 PhaseChip(label = "Phase 1–2: MediaProjection", active = true)
-                PhaseChip(label = "Phase 3: ROI Seçimi", active = false)
-                PhaseChip(label = "Phase 4–5: ML Kit OCR", active = false)
-                PhaseChip(label = "Phase 6: EN→TR Çeviri", active = false)
-                PhaseChip(label = "Phase 7: Türkçe TTS", active = false)
+                PhaseChip(label = "Phase 3: ROI + ML Kit OCR", active = true)
+                PhaseChip(label = "Phase 4: EN→TR Çeviri", active = false)
+                PhaseChip(label = "Phase 5: Türkçe TTS", active = false)
             }
         }
     }
