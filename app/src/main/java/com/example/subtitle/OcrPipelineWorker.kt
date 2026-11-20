@@ -34,6 +34,7 @@ class OcrPipelineWorker(
     private val deduplicator: SubtitleDeduplicator = SubtitleDeduplicator(),
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val elapsedClockMs: () -> Long = { SystemClock.elapsedRealtime() },
+    private val onSubtitleEvent: ((SubtitleEvent) -> Unit)? = null,
     private val onStateChanged: (OcrState) -> Unit
 ) {
     private val scope = CoroutineScope(SupervisorJob() + dispatcher)
@@ -185,6 +186,7 @@ class OcrPipelineWorker(
             )
             if (hadActiveSubtitle) {
                 lastLoggedStatus = OcrStatus.READY
+                onSubtitleEvent?.invoke(SubtitleEvent.Cleared)
                 Log.i(
                     TAG,
                     "status=READY event=SUBTITLE_DISAPPEARED processingMs=${output.processingTimeMs} " +
@@ -226,6 +228,7 @@ class OcrPipelineWorker(
 
         if (recognition.isNewText) {
             lastLoggedStatus = OcrStatus.READY
+            onSubtitleEvent?.invoke(SubtitleEvent.Recognized(recognition))
             Log.i(
                 TAG,
                 "status=READY text=\"${recognition.text}\" processingMs=${recognition.processingTimeMs} " +
@@ -247,6 +250,7 @@ class OcrPipelineWorker(
     }
 
     fun stop() {
+        val hadActiveSubtitle = currentState.latestText != null
         isRunning.set(false)
         workerJob?.cancel()
         workerJob = null
@@ -267,6 +271,9 @@ class OcrPipelineWorker(
                 errorMessage = null
             )
         )
+        if (hadActiveSubtitle) {
+            onSubtitleEvent?.invoke(SubtitleEvent.Cleared)
+        }
     }
 
     fun release() {

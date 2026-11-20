@@ -17,10 +17,14 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.IntentCompat
 import com.example.MainActivity
 import com.example.R
+import com.example.speech.SherpaOnnxTurkishSpeechEngine
+import com.example.speech.SpeechPipelineWorker
 import com.example.subtitle.OcrPipelineWorker
 import com.example.subtitle.RealMlKitOcrEngine
 import com.example.subtitle.RoiPreferencesRepository
 import com.example.subtitle.SubtitleRoi
+import com.example.translation.MlKitTranslationEngine
+import com.example.translation.TranslationPipelineWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -33,11 +37,15 @@ class ScreenCaptureService : Service() {
     private lateinit var projectionController: MediaProjectionController
     private lateinit var roiRepository: RoiPreferencesRepository
     private val ocrEngine = RealMlKitOcrEngine()
+    private val translationEngine = MlKitTranslationEngine()
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     @Volatile
     private var activeRoi: SubtitleRoi = SubtitleRoi.DEFAULT
 
+    private lateinit var speechEngine: SherpaOnnxTurkishSpeechEngine
+    private lateinit var speechPipelineWorker: SpeechPipelineWorker
+    private lateinit var translationPipelineWorker: TranslationPipelineWorker
     private lateinit var ocrPipelineWorker: OcrPipelineWorker
     private lateinit var frameProcessor: FrameProcessor
     private val frameCapture = FrameCapture()
@@ -51,8 +59,31 @@ class ScreenCaptureService : Service() {
         projectionController = MediaProjectionController(applicationContext)
         roiRepository = RoiPreferencesRepository(applicationContext)
 
+        speechEngine = SherpaOnnxTurkishSpeechEngine(applicationContext)
+        speechPipelineWorker = SpeechPipelineWorker(
+            speechEngine = speechEngine,
+            onStateChanged = { speechState ->
+                CaptureStateHolder.update { current ->
+                    current.copy(speechState = speechState)
+                }
+            }
+        )
+
+        translationPipelineWorker = TranslationPipelineWorker(
+            translationEngine = translationEngine,
+            onStateChanged = { translationState ->
+                CaptureStateHolder.update { current ->
+                    current.copy(translationState = translationState)
+                }
+                speechPipelineWorker.onTranslationState(translationState)
+            }
+        )
+
         ocrPipelineWorker = OcrPipelineWorker(
             ocrEngine = ocrEngine,
+            onSubtitleEvent = { event ->
+                translationPipelineWorker.onSubtitleEvent(event)
+            },
             onStateChanged = { ocrState ->
                 CaptureStateHolder.update { current ->
                     current.copy(ocrState = ocrState)
@@ -89,6 +120,18 @@ class ScreenCaptureService : Service() {
             ACTION_STOP_CAPTURE -> {
                 stopCaptureSession(stoppedBySystem = false)
                 stopSelf()
+            }
+
+            ACTION_PREPARE_TRANSLATION -> {
+                translationPipelineWorker.prepareModel()
+            }
+
+            ACTION_PREPARE_TTS -> {
+                speechPipelineWorker.prepareModel()
+            }
+
+            ACTION_TEST_TTS -> {
+                speechPipelineWorker.speakTestPhrase()
             }
 
             else -> {
@@ -148,6 +191,8 @@ class ScreenCaptureService : Service() {
             projectionCallback = callback
 
             val bounds = projectionController.queryMaximumDisplayBounds()
+            speechPipelineWorker.start()
+            translationPipelineWorker.start()
             ocrPipelineWorker.start()
             frameProcessor.start()
             frameCapture.start(
@@ -236,6 +281,8 @@ class ScreenCaptureService : Service() {
         frameCapture.stop()
         frameProcessor.stop()
         ocrPipelineWorker.stop()
+        translationPipelineWorker.stop()
+        speechPipelineWorker.stop()
         val projection = mediaProjection
         val callback = projectionCallback
         if (projection != null) {
@@ -312,6 +359,8 @@ class ScreenCaptureService : Service() {
         releaseProjectionObjects()
         frameProcessor.release()
         ocrPipelineWorker.release()
+        translationPipelineWorker.release()
+        speechPipelineWorker.release()
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -325,6 +374,9 @@ class ScreenCaptureService : Service() {
 
         const val ACTION_START_CAPTURE = "com.example.capture.ACTION_START_CAPTURE"
         const val ACTION_STOP_CAPTURE = "com.example.capture.ACTION_STOP_CAPTURE"
+        const val ACTION_PREPARE_TRANSLATION = "com.example.capture.ACTION_PREPARE_TRANSLATION"
+        const val ACTION_PREPARE_TTS = "com.example.capture.ACTION_PREPARE_TTS"
+        const val ACTION_TEST_TTS = "com.example.capture.ACTION_TEST_TTS"
         const val EXTRA_RESULT_CODE = "extra_result_code"
         const val EXTRA_RESULT_DATA = "extra_result_data"
 
@@ -339,6 +391,24 @@ class ScreenCaptureService : Service() {
         fun createStopIntent(context: Context): Intent {
             return Intent(context, ScreenCaptureService::class.java).apply {
                 action = ACTION_STOP_CAPTURE
+            }
+        }
+
+        fun createPrepareTranslationIntent(context: Context): Intent {
+            return Intent(context, ScreenCaptureService::class.java).apply {
+                action = ACTION_PREPARE_TRANSLATION
+            }
+        }
+
+        fun createPrepareTtsIntent(context: Context): Intent {
+            return Intent(context, ScreenCaptureService::class.java).apply {
+                action = ACTION_PREPARE_TTS
+            }
+        }
+
+        fun createTestTtsIntent(context: Context): Intent {
+            return Intent(context, ScreenCaptureService::class.java).apply {
+                action = ACTION_TEST_TTS
             }
         }
     }

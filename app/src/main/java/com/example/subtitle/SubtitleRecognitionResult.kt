@@ -9,6 +9,11 @@ data class SubtitleRecognitionResult(
     val processingTimeMs: Long
 )
 
+sealed class SubtitleEvent {
+    data class Recognized(val result: SubtitleRecognitionResult) : SubtitleEvent()
+    data object Cleared : SubtitleEvent()
+}
+
 /**
  * Tracks active normalized subtitle text across consecutive frames.
  * Lifecycle:

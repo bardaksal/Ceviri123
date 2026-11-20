@@ -1,6 +1,11 @@
 package com.example.capture
 
 import android.graphics.Bitmap
+import com.example.speech.SpeechErrorType
+import com.example.speech.SpeechModelState
+import com.example.speech.SpeechStatus
+import com.example.translation.TranslationModelState
+import com.example.translation.TranslationStatus
 
 enum class CaptureStatus {
     IDLE,
@@ -53,6 +58,34 @@ data class OcrState(
     val engineLabel: String = "On-device ML Kit"
 )
 
+data class TranslationState(
+    val modelState: TranslationModelState = TranslationModelState.NOT_READY,
+    val status: TranslationStatus = TranslationStatus.MODEL_NOT_READY,
+    val sourceText: String? = null,
+    val translatedText: String? = null,
+    val sourceFrameIndex: Long = 0L,
+    val processingTimeMs: Long? = null,
+    val isTranslating: Boolean = false,
+    val errorMessage: String? = null,
+    val engineLabel: String = "On-device ML Kit (EN → TR)"
+)
+
+data class SpeechState(
+    val modelState: SpeechModelState = SpeechModelState.MODEL_NOT_READY,
+    val status: SpeechStatus = SpeechStatus.MODEL_NOT_READY,
+    val languageCode: String = "tr-TR",
+    val currentText: String? = null,
+    val sourceFrameIndex: Long = 0L,
+    val preparationTimeMs: Long? = null,
+    val firstAudioLatencyMs: Long? = null,
+    val synthesisDurationMs: Long? = null,
+    val audioPlaybackDurationMs: Long? = null,
+    val downloadProgressPercent: Int? = null,
+    val errorType: SpeechErrorType = SpeechErrorType.NONE,
+    val errorMessage: String? = null,
+    val engineLabel: String = "Sherpa-ONNX Piper (tr-TR)"
+)
+
 data class CaptureSessionState(
     val status: CaptureStatus = CaptureStatus.IDLE,
     val telemetry: FrameTelemetry? = null,
@@ -60,7 +93,9 @@ data class CaptureSessionState(
     val errorMessage: String? = null,
     val isContentVisible: Boolean = true,
     val hardwareInfo: HardwareAccelerationInfo? = null,
-    val ocrState: OcrState = OcrState()
+    val ocrState: OcrState = OcrState(),
+    val translationState: TranslationState = TranslationState(),
+    val speechState: SpeechState = SpeechState()
 )
 
 data class CapturedFrame(

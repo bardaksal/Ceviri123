@@ -14,9 +14,13 @@ import com.example.capture.CaptureStateHolder
 import com.example.capture.CaptureStatus
 import com.example.capture.MediaProjectionController
 import com.example.capture.ScreenCaptureService
+import com.example.speech.SherpaOnnxTurkishSpeechEngine
+import com.example.speech.SpeechPipelineWorker
 import com.example.subtitle.RoiPreferencesRepository
 import com.example.subtitle.SubtitleRoi
 import com.example.subtitle.SubtitleRoiSettings
+import com.example.translation.MlKitTranslationEngine
+import com.example.translation.TranslationPipelineWorker
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -42,9 +46,42 @@ class CaptureViewModel(application: Application) : AndroidViewModel(application)
 
     private val projectionController = MediaProjectionController(application.applicationContext)
     private val roiRepository = RoiPreferencesRepository(application.applicationContext)
+    private val modelHelperWorker = TranslationPipelineWorker(
+        translationEngine = MlKitTranslationEngine(),
+        onStateChanged = { translationState ->
+            CaptureStateHolder.update { current ->
+                // Only update from ViewModel helper when capture service is not actively driving translation
+                if (current.status == CaptureStatus.ACTIVE) {
+                    current
+                } else {
+                    current.copy(translationState = translationState)
+                }
+            }
+        }
+    )
+
+    private val speechHelperWorker = SpeechPipelineWorker(
+        speechEngine = SherpaOnnxTurkishSpeechEngine(application.applicationContext),
+        onStateChanged = { speechState ->
+            CaptureStateHolder.update { current ->
+                if (current.status == CaptureStatus.ACTIVE || current.status == CaptureStatus.STARTING) {
+                    current
+                } else {
+                    current.copy(speechState = speechState)
+                }
+            }
+        }
+    )
 
     private val environmentState = MutableStateFlow(readEnvironmentStatus())
     private val isRoiEditorOpen = MutableStateFlow(false)
+
+    init {
+        viewModelScope.launch {
+            modelHelperWorker.refreshModelState()
+        }
+        speechHelperWorker.start()
+    }
 
     val uiState: StateFlow<CaptureDashboardUiState> = combine(
         CaptureStateHolder.state,
@@ -71,6 +108,48 @@ class CaptureViewModel(application: Application) : AndroidViewModel(application)
 
     fun refreshEnvironmentChecks() {
         environmentState.value = readEnvironmentStatus()
+        if (CaptureStateHolder.state.value.status != CaptureStatus.ACTIVE) {
+            viewModelScope.launch {
+                modelHelperWorker.refreshModelState()
+            }
+            speechHelperWorker.start()
+        }
+    }
+
+    fun prepareTranslationModel() {
+        val currentStatus = CaptureStateHolder.state.value.status
+        if (currentStatus == CaptureStatus.ACTIVE) {
+            val appContext = getApplication<Application>().applicationContext
+            appContext.startService(ScreenCaptureService.createPrepareTranslationIntent(appContext))
+        } else {
+            modelHelperWorker.prepareModel()
+        }
+    }
+
+    fun prepareSpeechModel() {
+        val currentStatus = CaptureStateHolder.state.value.status
+        if (currentStatus == CaptureStatus.ACTIVE) {
+            val appContext = getApplication<Application>().applicationContext
+            appContext.startService(ScreenCaptureService.createPrepareTtsIntent(appContext))
+        } else {
+            speechHelperWorker.prepareModel()
+        }
+    }
+
+    fun testSpeechVoice() {
+        val currentStatus = CaptureStateHolder.state.value.status
+        if (currentStatus == CaptureStatus.ACTIVE) {
+            val appContext = getApplication<Application>().applicationContext
+            appContext.startService(ScreenCaptureService.createTestTtsIntent(appContext))
+        } else {
+            speechHelperWorker.speakTestPhrase()
+        }
+    }
+
+    override fun onCleared() {
+        modelHelperWorker.release()
+        speechHelperWorker.release()
+        super.onCleared()
     }
 
     fun openRoiEditor() {
@@ -133,6 +212,9 @@ class CaptureViewModel(application: Application) : AndroidViewModel(application)
             }
             return
         }
+
+        // Release any idle ViewModel native ONNX TTS instance before service acquires its own
+        speechHelperWorker.unloadEngineForHandoff()
 
         val appContext = getApplication<Application>().applicationContext
         val serviceIntent = ScreenCaptureService.createStartIntent(appContext, resultCode, data)

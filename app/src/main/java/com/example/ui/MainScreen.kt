@@ -34,23 +34,28 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CropFree
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Monitor
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.ScreenShare
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.StopScreenShare
 import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.outlined.LockClock
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -87,8 +92,14 @@ import com.example.capture.CaptureStatus
 import com.example.capture.FrameTelemetry
 import com.example.capture.OcrState
 import com.example.capture.OcrStatus
+import com.example.capture.SpeechState
+import com.example.capture.TranslationState
+import com.example.speech.SpeechModelState
+import com.example.speech.SpeechStatus
 import com.example.subtitle.SubtitleRoi
 import com.example.subtitle.SubtitleRoiSettings
+import com.example.translation.TranslationModelState
+import com.example.translation.TranslationStatus
 import com.example.ui.theme.ElectricCyan
 import com.example.ui.theme.ElectricCyanDim
 import com.example.ui.theme.ObsidianBackground
@@ -114,6 +125,9 @@ fun MainScreen(
     onStopCaptureClick: () -> Unit,
     onOpenRoiEditorClick: () -> Unit,
     onUpdateOcrIntervalMs: (Long) -> Unit,
+    onPrepareTranslationClick: () -> Unit,
+    onPrepareSpeechClick: () -> Unit,
+    onTestVoiceClick: () -> Unit,
     onLaunchRemotePlayClick: () -> Unit,
     onRefreshChecksClick: () -> Unit,
     onDismissErrorClick: () -> Unit,
@@ -192,6 +206,15 @@ fun MainScreen(
                                 ocrState = uiState.session.ocrState,
                                 isCaptureActive = isCaptureActive
                             )
+                            TranslationCard(
+                                translationState = uiState.session.translationState,
+                                onPrepareTranslationClick = onPrepareTranslationClick
+                            )
+                            SpeechCard(
+                                speechState = uiState.session.speechState,
+                                onPrepareSpeechClick = onPrepareSpeechClick,
+                                onTestVoiceClick = onTestVoiceClick
+                            )
                             SystemReadinessCard(
                                 uiState = uiState,
                                 onLaunchRemotePlayClick = onLaunchRemotePlayClick
@@ -232,6 +255,15 @@ fun MainScreen(
                         SubtitleOcrResultCard(
                             ocrState = uiState.session.ocrState,
                             isCaptureActive = isCaptureActive
+                        )
+                        TranslationCard(
+                            translationState = uiState.session.translationState,
+                            onPrepareTranslationClick = onPrepareTranslationClick
+                        )
+                        SpeechCard(
+                            speechState = uiState.session.speechState,
+                            onPrepareSpeechClick = onPrepareSpeechClick,
+                            onTestVoiceClick = onTestVoiceClick
                         )
                         LiveFramePreviewCard(
                             uiState = uiState,
@@ -280,7 +312,7 @@ private fun TopHeaderBar(
                     border = BorderStroke(1.dp, ElectricCyan.copy(alpha = 0.45f))
                 ) {
                     Text(
-                        text = "PHASE 3 • OCR",
+                        text = "PHASE 5 • SESLİ ÇEVİRİ",
                         style = MaterialTheme.typography.labelSmall,
                         color = ElectricCyan,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
@@ -289,7 +321,7 @@ private fun TopHeaderBar(
             }
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = "PS5 Remote Play • Altyazı ROI & On-Device OCR",
+                text = "PS5 Remote Play • ROI, OCR, EN→TR Çeviri & Türkçe Ses",
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary,
                 maxLines = 1,
@@ -656,6 +688,557 @@ private fun SubtitleOcrResultCard(
                     accentColor = TextSecondary,
                     modifier = Modifier.weight(1f)
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TranslationCard(
+    translationState: TranslationState,
+    onPrepareTranslationClick: () -> Unit
+) {
+    val statusColor = when (translationState.status) {
+        TranslationStatus.ACTIVE, TranslationStatus.READY -> SignalEmerald
+        TranslationStatus.TRANSLATING -> ElectricCyan
+        TranslationStatus.DOWNLOADING, TranslationStatus.MODEL_NOT_READY -> SignalAmber
+        TranslationStatus.ERROR -> SignalCoral
+    }
+
+    val statusText = when (translationState.status) {
+        TranslationStatus.MODEL_NOT_READY -> "NOT READY"
+        TranslationStatus.DOWNLOADING -> "DOWNLOADING"
+        TranslationStatus.READY -> "READY"
+        TranslationStatus.TRANSLATING -> "TRANSLATING"
+        TranslationStatus.ACTIVE -> "ACTIVE"
+        TranslationStatus.ERROR -> "ERROR"
+    }
+
+    val modelBadgeText = when (translationState.modelState) {
+        TranslationModelState.NOT_READY -> "Model: NOT READY"
+        TranslationModelState.DOWNLOADING -> "Model: DOWNLOADING"
+        TranslationModelState.READY -> "Model: READY"
+        TranslationModelState.ERROR -> "Model: ERROR"
+    }
+
+    val modelBadgeColor = when (translationState.modelState) {
+        TranslationModelState.READY -> SignalEmerald
+        TranslationModelState.DOWNLOADING -> ElectricCyan
+        TranslationModelState.NOT_READY -> SignalAmber
+        TranslationModelState.ERROR -> SignalCoral
+    }
+
+    val modelHelperText = when (translationState.modelState) {
+        TranslationModelState.DOWNLOADING -> "English → Turkish model hazırlanıyor..."
+        TranslationModelState.READY -> "English → Turkish hazır"
+        TranslationModelState.ERROR -> "Model hazırlama başarısız oldu"
+        TranslationModelState.NOT_READY -> "İlk kullanım için EN → TR çeviri modeli indirilmeli"
+    }
+
+    Card(
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = SlateSurface),
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (translationState.status == TranslationStatus.ACTIVE &&
+                !translationState.translatedText.isNullOrBlank()
+            ) {
+                SignalEmerald.copy(alpha = 0.55f)
+            } else {
+                SlateBorder
+            }
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("translation_card")
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Translate,
+                        contentDescription = "Türkçe çeviri durumu",
+                        tint = statusColor
+                    )
+                    Text(
+                        text = "TÜRKÇE ÇEVİRİ (EN → TR)",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TextPrimary
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = SlateSurfaceElevated,
+                    border = BorderStroke(1.dp, statusColor.copy(alpha = 0.55f)),
+                    modifier = Modifier.testTag("translation_status_badge")
+                ) {
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = statusColor,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = SlateSurfaceElevated,
+                    border = BorderStroke(1.dp, modelBadgeColor.copy(alpha = 0.45f)),
+                    modifier = Modifier.testTag("translation_model_badge")
+                ) {
+                    Text(
+                        text = modelBadgeText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = modelBadgeColor,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = modelHelperText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Surface(
+                shape = MaterialTheme.shapes.medium,
+                color = ObsidianBackground,
+                border = BorderStroke(1.dp, SlateBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "TÜRKÇE ALTYAZI ÇIKTISI",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextMuted
+                    )
+                    Text(
+                        text = when {
+                            !translationState.translatedText.isNullOrBlank() ->
+                                translationState.translatedText
+                            translationState.isTranslating ->
+                                "Çevriliyor..."
+                            translationState.modelState == TranslationModelState.NOT_READY ->
+                                "Model henüz hazırlanmadı"
+                            else ->
+                                "Henüz çeviri yok"
+                        },
+                        style = MaterialTheme.typography.titleLarge,
+                        color = if (!translationState.translatedText.isNullOrBlank()) {
+                            TextPrimary
+                        } else {
+                            TextMuted
+                        },
+                        modifier = Modifier.testTag("translation_result_text")
+                    )
+                    if (!translationState.errorMessage.isNullOrBlank()) {
+                        Text(
+                            text = translationState.errorMessage,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SignalCoral,
+                            modifier = Modifier.testTag("translation_error_text")
+                        )
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                TelemetryMetricTile(
+                    label = "ÇEVİRİ SÜRESİ",
+                    value = translationState.processingTimeMs?.let { "$it ms" } ?: "—",
+                    accentColor = ElectricCyan,
+                    modifier = Modifier.weight(1f)
+                )
+                TelemetryMetricTile(
+                    label = "MOTOR",
+                    value = translationState.engineLabel,
+                    accentColor = TextSecondary,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            if (translationState.modelState != TranslationModelState.READY) {
+                Button(
+                    onClick = onPrepareTranslationClick,
+                    enabled = translationState.modelState != TranslationModelState.DOWNLOADING,
+                    shape = MaterialTheme.shapes.medium,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ElectricCyan,
+                        contentColor = ObsidianBackground,
+                        disabledContainerColor = SlateSurfaceElevated,
+                        disabledContentColor = TextMuted
+                    ),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .minimumInteractiveComponentSize()
+                        .testTag("prepare_translation_button")
+                ) {
+                    if (translationState.modelState == TranslationModelState.DOWNLOADING) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = ElectricCyan
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Model İndiriliyor...",
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Filled.Download,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Çeviriyi Hazırla",
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SpeechCard(
+    speechState: SpeechState,
+    onPrepareSpeechClick: () -> Unit,
+    onTestVoiceClick: () -> Unit
+) {
+    val isPreparing = speechState.modelState == SpeechModelState.DOWNLOADING ||
+        speechState.modelState == SpeechModelState.LOADING ||
+        speechState.status == SpeechStatus.PREPARING
+
+    val statusColor = when (speechState.status) {
+        SpeechStatus.READY -> SignalEmerald
+        SpeechStatus.SPEAKING -> ElectricCyan
+        SpeechStatus.PREPARING, SpeechStatus.MODEL_NOT_READY -> SignalAmber
+        SpeechStatus.IDLE -> TextMuted
+        SpeechStatus.ERROR -> SignalCoral
+    }
+
+    val statusText = when (speechState.status) {
+        SpeechStatus.IDLE -> "IDLE"
+        SpeechStatus.MODEL_NOT_READY -> "MODEL NOT READY"
+        SpeechStatus.PREPARING -> "PREPARING"
+        SpeechStatus.READY -> "READY"
+        SpeechStatus.SPEAKING -> "SPEAKING"
+        SpeechStatus.ERROR -> "ERROR"
+    }
+
+    val modelBadgeText = when (speechState.modelState) {
+        SpeechModelState.MODEL_NOT_READY -> "Model: NOT READY"
+        SpeechModelState.DOWNLOADING -> {
+            val pct = speechState.downloadProgressPercent
+            if (pct != null) "Model: DOWNLOADING $pct%" else "Model: DOWNLOADING"
+        }
+        SpeechModelState.LOADING -> "Model: LOADING"
+        SpeechModelState.READY -> "Model: READY"
+        SpeechModelState.ERROR -> "Model: ERROR"
+    }
+
+    val modelBadgeColor = when (speechState.modelState) {
+        SpeechModelState.READY -> SignalEmerald
+        SpeechModelState.DOWNLOADING, SpeechModelState.LOADING -> ElectricCyan
+        SpeechModelState.MODEL_NOT_READY -> SignalAmber
+        SpeechModelState.ERROR -> SignalCoral
+    }
+
+    val helperText = when {
+        speechState.status == SpeechStatus.SPEAKING -> "Türkçe ses çıkışına aktarılıyor..."
+        speechState.modelState == SpeechModelState.DOWNLOADING -> "Preparing Turkish voice (indiriliyor)..."
+        speechState.modelState == SpeechModelState.LOADING -> "Preparing Turkish voice..."
+        speechState.modelState == SpeechModelState.READY -> "Language: TR • On-device Neural TTS hazır"
+        speechState.modelState == SpeechModelState.ERROR -> "TTS motoru hatası"
+        else -> "İlk kullanım için Türkçe Piper ONNX modeli gerekli"
+    }
+
+    Card(
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = SlateSurface),
+        border = BorderStroke(
+            width = 1.dp,
+            color = when (speechState.status) {
+                SpeechStatus.SPEAKING -> ElectricCyan.copy(alpha = 0.7f)
+                SpeechStatus.READY -> SignalEmerald.copy(alpha = 0.45f)
+                SpeechStatus.ERROR -> SignalCoral.copy(alpha = 0.5f)
+                else -> SlateBorder
+            }
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("speech_card")
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.VolumeUp,
+                        contentDescription = "Türkçe ses durumu",
+                        tint = statusColor
+                    )
+                    Text(
+                        text = "TÜRKÇE SES",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = TextPrimary
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = SlateSurfaceElevated,
+                    border = BorderStroke(1.dp, statusColor.copy(alpha = 0.55f)),
+                    modifier = Modifier.testTag("speech_status_badge")
+                ) {
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = statusColor,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = SlateSurfaceElevated,
+                    border = BorderStroke(1.dp, modelBadgeColor.copy(alpha = 0.45f)),
+                    modifier = Modifier.testTag("speech_model_badge")
+                ) {
+                    Text(
+                        text = modelBadgeText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = modelBadgeColor,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = SlateSurfaceElevated,
+                    border = BorderStroke(1.dp, SlateBorder)
+                ) {
+                    Text(
+                        text = "Language: TR",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            Text(
+                text = helperText,
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+
+            Surface(
+                shape = MaterialTheme.shapes.medium,
+                color = ObsidianBackground,
+                border = BorderStroke(1.dp, SlateBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "SESLENDİRİLEN METİN",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextMuted
+                    )
+                    Text(
+                        text = when {
+                            !speechState.currentText.isNullOrBlank() -> speechState.currentText
+                            speechState.modelState == SpeechModelState.MODEL_NOT_READY ->
+                                "Türkçe neural ses modeli henüz hazırlanmadı"
+                            else -> "Henüz seslendirme yok"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        color = if (!speechState.currentText.isNullOrBlank()) TextPrimary else TextMuted,
+                        modifier = Modifier.testTag("speech_current_text")
+                    )
+                    if (!speechState.errorMessage.isNullOrBlank()) {
+                        Text(
+                            text = speechState.errorMessage,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SignalCoral,
+                            modifier = Modifier.testTag("speech_error_text")
+                        )
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                TelemetryMetricTile(
+                    label = "FIRST AUDIO",
+                    value = speechState.firstAudioLatencyMs?.let { "$it ms" } ?: "UNKNOWN",
+                    accentColor = ElectricCyan,
+                    modifier = Modifier.weight(1f)
+                )
+                TelemetryMetricTile(
+                    label = "SYNTHESIS",
+                    value = speechState.synthesisDurationMs?.let { "$it ms" } ?: "UNKNOWN",
+                    accentColor = SignalEmerald,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                TelemetryMetricTile(
+                    label = "PLAYBACK",
+                    value = speechState.audioPlaybackDurationMs?.let { "$it ms" } ?: "UNKNOWN",
+                    accentColor = TextPrimary,
+                    modifier = Modifier.weight(1f)
+                )
+                TelemetryMetricTile(
+                    label = "HAZIRLIK",
+                    value = speechState.preparationTimeMs?.let { "$it ms" } ?: "UNKNOWN",
+                    accentColor = TextSecondary,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Text(
+                text = "Motor: ${speechState.engineLabel} • Bluetooth/Hoparlör otomatik yönlendirme",
+                style = MaterialTheme.typography.labelSmall,
+                color = TextMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (speechState.modelState != SpeechModelState.READY) {
+                    Button(
+                        onClick = onPrepareSpeechClick,
+                        enabled = !isPreparing,
+                        shape = MaterialTheme.shapes.medium,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ElectricCyan,
+                            contentColor = ObsidianBackground,
+                            disabledContainerColor = SlateSurfaceElevated,
+                            disabledContentColor = TextMuted
+                        ),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .minimumInteractiveComponentSize()
+                            .testTag("prepare_speech_button")
+                    ) {
+                        if (isPreparing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = ElectricCyan
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = speechState.downloadProgressPercent?.let { "İndiriliyor %$it" }
+                                    ?: "Hazırlanıyor...",
+                                style = MaterialTheme.typography.labelLarge,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Filled.Download,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Sesi Hazırla",
+                                style = MaterialTheme.typography.labelLarge
+                            )
+                        }
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = onTestVoiceClick,
+                    enabled = !isPreparing,
+                    shape = MaterialTheme.shapes.medium,
+                    border = BorderStroke(
+                        1.dp,
+                        if (!isPreparing) ElectricCyan.copy(alpha = 0.6f) else SlateBorder
+                    ),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .minimumInteractiveComponentSize()
+                        .testTag("test_voice_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.RecordVoiceOver,
+                        contentDescription = null,
+                        tint = if (!isPreparing) ElectricCyan else TextMuted,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Test Voice",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (!isPreparing) ElectricCyan else TextMuted
+                    )
+                }
             }
         }
     }
@@ -1159,8 +1742,8 @@ private fun PipelineRoadmapCard() {
             ) {
                 PhaseChip(label = "Phase 1–2: MediaProjection", active = true)
                 PhaseChip(label = "Phase 3: ROI + ML Kit OCR", active = true)
-                PhaseChip(label = "Phase 4: EN→TR Çeviri", active = false)
-                PhaseChip(label = "Phase 5: Türkçe TTS", active = false)
+                PhaseChip(label = "Phase 4: EN→TR Çeviri", active = true)
+                PhaseChip(label = "Phase 5: Türkçe TTS", active = true)
             }
         }
     }

@@ -86,6 +86,9 @@ class MainActivity : ComponentActivity() {
                         onStopCaptureClick = { viewModel.stopCapture() },
                         onOpenRoiEditorClick = { viewModel.openRoiEditor() },
                         onUpdateOcrIntervalMs = { intervalMs -> viewModel.updateOcrIntervalMs(intervalMs) },
+                        onPrepareTranslationClick = { viewModel.prepareTranslationModel() },
+                        onPrepareSpeechClick = { viewModel.prepareSpeechModel() },
+                        onTestVoiceClick = { viewModel.testSpeechVoice() },
                         onLaunchRemotePlayClick = { viewModel.launchRemotePlayIfInstalled() },
                         onRefreshChecksClick = { viewModel.refreshEnvironmentChecks() },
                         onDismissErrorClick = { viewModel.dismissError() }
