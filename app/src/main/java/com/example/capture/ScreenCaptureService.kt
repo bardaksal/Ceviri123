@@ -131,7 +131,7 @@ class ScreenCaptureService : Service() {
             }
 
             ACTION_TEST_TTS -> {
-                speechPipelineWorker.speakTestPhrase()
+                speechPipelineWorker.runDiagnosticTest()
             }
 
             else -> {

@@ -183,17 +183,127 @@ class SpeechPipelineWorker(
         speakText(text = text, sourceFrameIndex = translationState.sourceFrameIndex)
     }
 
-    fun speakTestPhrase(phrase: String = TEST_PHRASE) {
-        scope.launch {
-            val snapshot = currentStateSnapshot()
-            if (snapshot.modelState != SpeechModelState.READY || !speechEngine.isEngineLoaded()) {
-                val modelState = prepareModelAndAwait()
-                if (modelState != SpeechModelState.READY) {
-                    return@launch
-                }
-            }
+    fun speakTestPhrase(phrase: String = SpeechEngine.DIAGNOSTIC_TEST_PHRASE) {
+        runDiagnosticTest(phrase)
+    }
+
+    fun runDiagnosticTest(phrase: String = SpeechEngine.DIAGNOSTIC_TEST_PHRASE) {
+        val requestGen = generation.incrementAndGet()
+        synchronized(this) {
+            activeSpeakJob?.cancel()
+            activeSpeakJob = null
             lastSpokenText = null
-            speakText(text = phrase, sourceFrameIndex = currentStateSnapshot().sourceFrameIndex)
+            speechEngine.stop()
+        }
+
+        updateState {
+            it.copy(
+                status = if (speechEngine.isEngineLoaded()) SpeechStatus.SPEAKING else SpeechStatus.PREPARING,
+                currentText = phrase,
+                firstAudioLatencyMs = null,
+                synthesisDurationMs = null,
+                audioPlaybackDurationMs = null,
+                errorType = SpeechErrorType.NONE,
+                errorMessage = null,
+                diagnosticReport = null
+            )
+        }
+
+        activeSpeakJob = scope.launch {
+            val report = try {
+                speechEngine.runDiagnosticTest(
+                    text = phrase,
+                    onStateProgress = { stage, pct ->
+                        if (isActive && generation.get() == requestGen) {
+                            updateState {
+                                if (generation.get() != requestGen) it
+                                else it.copy(
+                                    modelState = stage,
+                                    status = SpeechStatus.PREPARING,
+                                    downloadProgressPercent = pct
+                                )
+                            }
+                        }
+                    },
+                    onFirstAudio = { firstMs ->
+                        if (isActive && generation.get() == requestGen) {
+                            updateState {
+                                if (generation.get() != requestGen) it
+                                else it.copy(
+                                    modelState = SpeechModelState.READY,
+                                    status = SpeechStatus.SPEAKING,
+                                    firstAudioLatencyMs = firstMs
+                                )
+                            }
+                        }
+                    }
+                )
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                SpeechDiagnosticReport(
+                    category = SpeechDiagnosticCategory.SYNTHESIS_FAILURE,
+                    testPhrase = phrase,
+                    modelName = TurkishTtsModelManager.MODEL_ID,
+                    detailMessage = t.localizedMessage ?: t.javaClass.simpleName
+                )
+            }
+
+            if (!isActive || generation.get() != requestGen) {
+                return@launch
+            }
+
+            if (report.category == SpeechDiagnosticCategory.TTS_SUCCESS) {
+                updateState {
+                    if (generation.get() != requestGen) it
+                    else it.copy(
+                        modelState = SpeechModelState.READY,
+                        status = SpeechStatus.READY,
+                        currentText = phrase,
+                        firstAudioLatencyMs = report.firstAudioLatencyMs ?: it.firstAudioLatencyMs,
+                        synthesisDurationMs = report.synthesisDurationMs,
+                        audioPlaybackDurationMs = report.audioPlaybackDurationMs,
+                        downloadProgressPercent = null,
+                        errorType = SpeechErrorType.NONE,
+                        errorMessage = null,
+                        diagnosticReport = report
+                    )
+                }
+                Log.i(
+                    TAG,
+                    "DIAGNOSTIC_RESULT=${report.category.codeLabel} sampleCount=${report.sampleCount} " +
+                        "sampleRate=${report.sampleRateHz} durationMs=${report.audioDurationMs} " +
+                        "mode=${report.synthesisMode} routing=${report.routedDeviceSummary}"
+                )
+            } else {
+                val mappedErrorType = when (report.category) {
+                    SpeechDiagnosticCategory.MODEL_LOAD_FAILURE,
+                    SpeechDiagnosticCategory.NATIVE_LIBRARY_LOAD_FAILURE,
+                    SpeechDiagnosticCategory.MODEL_CONFIGURATION_FAILURE -> SpeechErrorType.MODEL_LOAD_FAILED
+                    SpeechDiagnosticCategory.SYNTHESIS_FAILURE,
+                    SpeechDiagnosticCategory.SYNTHESIS_EMPTY_AUDIO -> SpeechErrorType.SYNTHESIS_ERROR
+                    SpeechDiagnosticCategory.AUDIOTRACK_FAILURE,
+                    SpeechDiagnosticCategory.AUDIO_OUTPUT_ROUTING_FAILURE -> SpeechErrorType.AUDIO_PLAYBACK_ERROR
+                    SpeechDiagnosticCategory.TTS_SUCCESS -> SpeechErrorType.NONE
+                }
+                val isModelLevelFailure = mappedErrorType == SpeechErrorType.MODEL_LOAD_FAILED
+                updateState {
+                    if (generation.get() != requestGen) it
+                    else it.copy(
+                        modelState = if (isModelLevelFailure) SpeechModelState.ERROR else it.modelState,
+                        status = SpeechStatus.ERROR,
+                        currentText = phrase,
+                        downloadProgressPercent = null,
+                        errorType = mappedErrorType,
+                        errorMessage = report.detailMessage,
+                        diagnosticReport = report
+                    )
+                }
+                Log.w(
+                    TAG,
+                    "DIAGNOSTIC_RESULT=${report.category.codeLabel} detail=\"${report.detailMessage}\""
+                )
+            }
         }
     }
 
@@ -406,6 +516,6 @@ class SpeechPipelineWorker(
 
     companion object {
         private const val TAG = "SUBCAST_SPEECH"
-        const val TEST_PHRASE = "Merhaba, SubCast TR hazır."
+        const val TEST_PHRASE = SpeechEngine.DIAGNOSTIC_TEST_PHRASE
     }
 }

@@ -19,6 +19,10 @@ android {
     versionCode = 1
     versionName = "1.0"
 
+    ndk {
+      abiFilters += listOf("arm64-v8a", "x86_64")
+    }
+
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
@@ -64,6 +68,11 @@ android {
     buildConfig = true
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
+  packaging {
+    jniLibs {
+      useLegacyPackaging = true
+    }
+  }
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true

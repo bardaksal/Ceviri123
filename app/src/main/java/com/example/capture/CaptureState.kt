@@ -1,6 +1,7 @@
 package com.example.capture
 
 import android.graphics.Bitmap
+import com.example.speech.SpeechDiagnosticReport
 import com.example.speech.SpeechErrorType
 import com.example.speech.SpeechModelState
 import com.example.speech.SpeechStatus
@@ -83,7 +84,8 @@ data class SpeechState(
     val downloadProgressPercent: Int? = null,
     val errorType: SpeechErrorType = SpeechErrorType.NONE,
     val errorMessage: String? = null,
-    val engineLabel: String = "Sherpa-ONNX Piper (tr-TR)"
+    val engineLabel: String = "Sherpa-ONNX Piper (tr-TR)",
+    val diagnosticReport: SpeechDiagnosticReport? = null
 )
 
 data class CaptureSessionState(

@@ -59,6 +59,51 @@ class SpeechPipelineTest {
             )
         }
 
+        var diagnosticHandler: suspend (String, ((SpeechModelState, Int?) -> Unit)?, ((Long) -> Unit)?) -> SpeechDiagnosticReport =
+            { text, onProgress, onFirstAudio ->
+                if (!loaded) {
+                    prepareHandler(onProgress)
+                }
+                when (val speakOutcome = speakHandler(text, onFirstAudio)) {
+                    is SpeechSpeakResult.Completed -> SpeechDiagnosticReport(
+                        category = SpeechDiagnosticCategory.TTS_SUCCESS,
+                        testPhrase = text,
+                        modelName = TurkishTtsModelManager.MODEL_ID,
+                        modelExists = true,
+                        modelSizeBytes = 63_200_000L,
+                        configExists = true,
+                        nativeLibraryLoaded = true,
+                        sampleRateHz = 22050,
+                        sampleCount = 18_081L,
+                        audioDurationMs = 820L,
+                        synthesisDurationMs = speakOutcome.metrics.synthesisDurationMs,
+                        firstAudioLatencyMs = speakOutcome.metrics.firstAudioLatencyMs,
+                        audioPlaybackDurationMs = speakOutcome.metrics.audioPlaybackDurationMs,
+                        synthesisMode = "generateWithCallback",
+                        audioTrackInitialized = true,
+                        audioTrackPlayed = true,
+                        routedDeviceSummary = "routed=SPEAKER"
+                    )
+                    is SpeechSpeakResult.NotReady -> SpeechDiagnosticReport(
+                        category = SpeechDiagnosticCategory.MODEL_LOAD_FAILURE,
+                        testPhrase = text,
+                        modelName = TurkishTtsModelManager.MODEL_ID,
+                        detailMessage = speakOutcome.reason
+                    )
+                    is SpeechSpeakResult.Failure -> SpeechDiagnosticReport(
+                        category = if (speakOutcome.errorType == SpeechErrorType.AUDIO_PLAYBACK_ERROR) {
+                            SpeechDiagnosticCategory.AUDIOTRACK_FAILURE
+                        } else {
+                            SpeechDiagnosticCategory.SYNTHESIS_EMPTY_AUDIO
+                        },
+                        testPhrase = text,
+                        modelName = TurkishTtsModelManager.MODEL_ID,
+                        nativeLibraryLoaded = true,
+                        detailMessage = speakOutcome.reason
+                    )
+                }
+            }
+
         override suspend fun isModelDownloaded(): Boolean = downloaded
 
         override fun isEngineLoaded(): Boolean = loaded
@@ -74,6 +119,16 @@ class SpeechPipelineTest {
             speakCallCount.incrementAndGet()
             synchronized(spokenTexts) { spokenTexts.add(text) }
             return speakHandler(text, onFirstAudio)
+        }
+
+        override suspend fun runDiagnosticTest(
+            text: String,
+            onStateProgress: ((SpeechModelState, Int?) -> Unit)?,
+            onFirstAudio: ((firstAudioLatencyMs: Long) -> Unit)?
+        ): SpeechDiagnosticReport {
+            speakCallCount.incrementAndGet()
+            synchronized(spokenTexts) { spokenTexts.add(text) }
+            return diagnosticHandler(text, onStateProgress, onFirstAudio)
         }
 
         override fun stop() {
@@ -532,5 +587,104 @@ class SpeechPipelineTest {
         ocrWorker.release()
         translationWorker.release()
         speechWorker.release()
+    }
+
+    @Test
+    fun `diagnostic TTS test runs directly on SpeechEngine bypassing OCR and translation`() = runBlocking {
+        val fakeSpeech = FakeSpeechEngine(downloaded = true, loaded = false)
+        val states = mutableListOf<SpeechState>()
+        val worker = SpeechPipelineWorker(
+            speechEngine = fakeSpeech,
+            onStateChanged = { s -> synchronized(states) { states.add(s) } }
+        )
+
+        worker.runDiagnosticTest()
+
+        waitUntil {
+            synchronized(states) {
+                states.lastOrNull()?.diagnosticReport != null
+            }
+        }
+
+        val finalState = synchronized(states) { states.last() }
+        val report = finalState.diagnosticReport!!
+        assertEquals(SpeechDiagnosticCategory.TTS_SUCCESS, report.category)
+        assertEquals(SpeechEngine.DIAGNOSTIC_TEST_PHRASE, report.testPhrase)
+        assertEquals(22050, report.sampleRateHz)
+        assertEquals(18_081L, report.sampleCount)
+        assertEquals(820L, report.audioDurationMs)
+        assertEquals(SpeechStatus.READY, finalState.status)
+        assertEquals(1, fakeSpeech.speakCallCount.get())
+
+        worker.release()
+    }
+
+    @Test
+    fun `diagnostic TTS test reports SYNTHESIS_EMPTY_AUDIO when zero samples are produced`() = runBlocking {
+        val fakeSpeech = FakeSpeechEngine(downloaded = true, loaded = true).apply {
+            speakHandler = { _, _ ->
+                SpeechSpeakResult.Failure(
+                    errorType = SpeechErrorType.SYNTHESIS_ERROR,
+                    reason = "TTS motoru ses örneği üretemedi."
+                )
+            }
+        }
+        val states = mutableListOf<SpeechState>()
+        val worker = SpeechPipelineWorker(
+            speechEngine = fakeSpeech,
+            onStateChanged = { s -> synchronized(states) { states.add(s) } }
+        )
+
+        worker.runDiagnosticTest("Merhaba, bu bir ses testidir.")
+
+        waitUntil {
+            synchronized(states) {
+                states.lastOrNull()?.diagnosticReport != null
+            }
+        }
+
+        val finalState = synchronized(states) { states.last() }
+        assertEquals(SpeechStatus.ERROR, finalState.status)
+        assertEquals(SpeechDiagnosticCategory.SYNTHESIS_EMPTY_AUDIO, finalState.diagnosticReport?.category)
+        assertEquals("TTS motoru ses örneği üretemedi.", finalState.errorMessage)
+
+        worker.release()
+    }
+
+    @Test
+    fun `model manager inspects internal storage paths and validates espeak-ng-data files`() {
+        val tempRoot = kotlin.io.path.createTempDirectory("subcast_tts_test").toFile()
+        try {
+            val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+            val manager = TurkishTtsModelManager(context = context, baseFilesDir = tempRoot)
+
+            val missingInspection = manager.inspectModelDirectory(logDetails = false)
+            assertEquals(false, missingInspection.onnxExists)
+            assertEquals(false, missingInspection.configExists)
+            assertEquals(null, manager.resolveModelPathsOrNull(logInspection = false))
+
+            val modelDir = java.io.File(tempRoot, "tts_models/${TurkishTtsModelManager.MODEL_ID}")
+            val espeakDir = java.io.File(modelDir, "espeak-ng-data")
+            espeakDir.mkdirs()
+            java.io.File(modelDir, TurkishTtsModelManager.EXPECTED_ONNX_NAME).writeBytes(ByteArray(1_200_000))
+            java.io.File(modelDir, "tokens.txt").writeText("a 1\n")
+            java.io.File(espeakDir, "phontab").writeBytes(byteArrayOf(1, 2, 3))
+            java.io.File(espeakDir, "phondata").writeBytes(byteArrayOf(1, 2, 3))
+            java.io.File(espeakDir, "phonindex").writeBytes(byteArrayOf(1, 2, 3))
+            java.io.File(modelDir, ".model_ready_v1").writeText("ok")
+
+            val readyInspection = manager.inspectModelDirectory(logDetails = false)
+            assertEquals(true, readyInspection.onnxExists)
+            assertEquals(1_200_000L, readyInspection.onnxSizeBytes)
+            assertEquals(true, readyInspection.configExists)
+            assertEquals(true, readyInspection.espeakPhontabExists)
+            assertEquals(true, readyInspection.espeakPhondataExists)
+            assertEquals(true, readyInspection.espeakPhonindexExists)
+            val resolved = manager.resolveModelPathsOrNull(logInspection = false)
+            assertTrue(resolved != null)
+            assertEquals(TurkishTtsModelManager.EXPECTED_ONNX_NAME, resolved?.onnxFile?.name)
+        } finally {
+            tempRoot.deleteRecursively()
+        }
     }
 }

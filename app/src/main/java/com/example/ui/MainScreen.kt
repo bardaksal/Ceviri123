@@ -94,6 +94,8 @@ import com.example.capture.OcrState
 import com.example.capture.OcrStatus
 import com.example.capture.SpeechState
 import com.example.capture.TranslationState
+import com.example.speech.SpeechDiagnosticCategory
+import com.example.speech.SpeechDiagnosticReport
 import com.example.speech.SpeechModelState
 import com.example.speech.SpeechStatus
 import com.example.subtitle.SubtitleRoi
@@ -1162,6 +1164,10 @@ private fun SpeechCard(
                 overflow = TextOverflow.Ellipsis
             )
 
+            speechState.diagnosticReport?.let { report ->
+                SpeechDiagnosticResultBox(report = report)
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -1234,11 +1240,67 @@ private fun SpeechCard(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Test Voice",
+                        text = "TTS Test",
                         style = MaterialTheme.typography.labelLarge,
                         color = if (!isPreparing) ElectricCyan else TextMuted
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SpeechDiagnosticResultBox(report: SpeechDiagnosticReport) {
+    val isSuccess = report.category == SpeechDiagnosticCategory.TTS_SUCCESS
+    val accent = if (isSuccess) SignalEmerald else SignalCoral
+    val bg = if (isSuccess) SignalEmeraldDim else SignalCoralDim
+
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = bg,
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.55f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("speech_diagnostic_box")
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = "TTS DİAGNOSTİK TESTİ: ${report.category.codeLabel}",
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                color = accent
+            )
+            Text(
+                text = "Model: ${report.modelName} • Native: ${if (report.nativeLibraryLoaded) "OK" else "FAIL"} • " +
+                    "Dosya: ${if (report.modelExists) "${report.modelSizeBytes / (1024 * 1024)} MB" else "YOK"} • " +
+                    "Config: ${if (report.configExists) "OK" else "YOK"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextPrimary
+            )
+            if (isSuccess) {
+                Text(
+                    text = "Samples: ${report.sampleCount} • SampleRate: ${report.sampleRateHz ?: 0} Hz • " +
+                        "Süre: ${report.audioDurationMs ?: 0} ms • Mod: ${report.synthesisMode ?: "-"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextPrimary
+                )
+            }
+            report.routedDeviceSummary?.let { routing ->
+                Text(
+                    text = "AudioTrack: init=${report.audioTrackInitialized}, play=${report.audioTrackPlayed} • $routing",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary
+                )
+            }
+            report.detailMessage?.let { msg ->
+                Text(
+                    text = msg,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (isSuccess) TextSecondary else SignalCoral
+                )
             }
         }
     }

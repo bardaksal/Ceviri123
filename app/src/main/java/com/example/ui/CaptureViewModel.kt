@@ -142,7 +142,7 @@ class CaptureViewModel(application: Application) : AndroidViewModel(application)
             val appContext = getApplication<Application>().applicationContext
             appContext.startService(ScreenCaptureService.createTestTtsIntent(appContext))
         } else {
-            speechHelperWorker.speakTestPhrase()
+            speechHelperWorker.runDiagnosticTest()
         }
     }
 
